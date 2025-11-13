@@ -1,0 +1,21 @@
+[package]
+name = "rustDFS"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+toml = "0.9.8"
+tonic = "0.14"
+prost = "0.14"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tonic-reflection = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+
+[[bin]]
+name = "rustDFS-server"
+path = "src/config.rs"

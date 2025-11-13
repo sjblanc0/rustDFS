@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package peer;
+
+service PeerNode {
+    rpc Handshake (HandshakeRequest) returns (HandshakeResponse);
+    rpc PeerPing (Ping) returns (Ping);
+}
+
+message HandshakeRequest {
+    string peerAddr = 1;
+    int32 peerID = 2;
+}
+
+message HandshakeResponse {
+    bool accepted = 1;
+}
+
+message Ping {
+    int32 peerID = 1;
+    int64 timestamp = 2;
+}
