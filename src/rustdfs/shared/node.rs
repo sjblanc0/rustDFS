@@ -1,6 +1,5 @@
 use super::error::{RustDFSError, Kind};
 
-use std::marker::Copy;
 use std::net::{SocketAddr, ToSocketAddrs};
 
 #[derive(Clone, Debug)]

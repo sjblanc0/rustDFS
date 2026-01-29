@@ -1,17 +1,15 @@
 use super::node::Node;
-use crate::daemon::shared::error::{RustDFSError, Kind};
+use crate::rustdfs::shared::error::RustDFSError;
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use serde::Deserialize;
 use toml;
-use toml::de::Error as TomlError;
 
 const CONFIG_FILE_GLOBAL: &str = "/etc/rustdfs/rdfsconf.toml";
 
 const DEFAULT_NODES: Vec<Node> = Vec::new();
-
 
 #[derive(Deserialize)]
 pub struct RustDFSConfig {

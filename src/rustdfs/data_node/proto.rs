@@ -1,4 +1,3 @@
-
 use tonic::{include_proto, include_file_descriptor_set};
 
 include_proto!("data_node");

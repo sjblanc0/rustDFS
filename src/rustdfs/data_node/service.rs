@@ -9,9 +9,9 @@ use super::proto::data_node_server::{DataNode, DataNodeServer};
 use super::proto::{WriteRequest, WriteResponse, ReadRequest, ReadResponse, PingMessage};
 use super::proto::FILE_DESCRIPTOR_SET;
 
-use crate::daemon::shared::node::Node;
-use crate::daemon::shared::error::{RustDFSError, Kind};
-use crate::daemon::shared::config::RustDFSConfig;
+use crate::rustdfs::shared::node::Node;
+use crate::rustdfs::shared::error::{RustDFSError, Kind};
+use crate::rustdfs::shared::config::RustDFSConfig;
 
 #[derive(Debug)]
 pub struct DataNodeService {

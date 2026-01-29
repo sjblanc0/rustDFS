@@ -1,11 +1,11 @@
-mod daemon;
+mod rustdfs;
 
-use crate::daemon::shared::error::RustDFSError;
+use crate::rustdfs::shared::error::RustDFSError;
 
 #[tokio::main]
 async fn main() -> Result<(), RustDFSError> {
-    use crate::daemon::data_node::service::DataNodeService;
-    use crate::daemon::shared::config::RustDFSConfig;
+    use crate::rustdfs::data_node::service::DataNodeService;
+    use crate::rustdfs::shared::config::RustDFSConfig;
 
     let config = RustDFSConfig::new()?;
 
