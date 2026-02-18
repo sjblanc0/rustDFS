@@ -1,6 +1,8 @@
+use tonic::Status;
 use tonic::transport::Error as TonicError;
 use toml::de::Error as TomlError;
 use std::io::Error as IoError;
+use std::sync::PoisonError;
 
 #[derive(Debug)]
 pub struct RustDFSError {
@@ -12,6 +14,7 @@ pub struct RustDFSError {
 pub enum Kind {
     ConfigError,
     DataNodeServiceError,
+    AsyncLockError,
 }
 
 impl RustDFSError {
@@ -27,6 +30,20 @@ impl RustDFSError {
         RustDFSError {
             kind: Kind::DataNodeServiceError,
             message: format!("Error serving Data Node service: {}", e),
+        }
+    }
+
+    pub fn err_forwarding(e: Status) -> Self {
+        RustDFSError {
+            kind: Kind::DataNodeServiceError,
+            message: format!("Error forwarding write to Data Node: {}", e),
+        }
+    }
+
+    pub fn err_invalid_data_dir(path: &str) -> Self {
+        RustDFSError {
+            kind: Kind::ConfigError,
+            message: format!("Invalid data directory path: {}", path),
         }
     }
 
@@ -54,6 +71,13 @@ impl RustDFSError {
     pub fn err_invalid_addr(e: IoError) -> Self {
         RustDFSError {
             kind: Kind::ConfigError,
+            message: format!("{}", e),
+        }
+    }
+
+    pub fn err_client_lock<T>(e: PoisonError<T>) -> Self {
+        RustDFSError {
+            kind: Kind::AsyncLockError,
             message: format!("{}", e),
         }
     }

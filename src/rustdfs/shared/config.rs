@@ -9,8 +9,6 @@ use toml;
 
 const CONFIG_FILE_GLOBAL: &str = "/etc/rustdfs/rdfsconf.toml";
 
-const DEFAULT_NODES: Vec<Node> = Vec::new();
-
 #[derive(Deserialize)]
 pub struct RustDFSConfig {
     #[serde(rename = "self")]

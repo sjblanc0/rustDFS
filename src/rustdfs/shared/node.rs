@@ -1,18 +1,20 @@
 use super::error::{RustDFSError, Kind};
 
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::RwLock;
 
-#[derive(Clone, Debug)]
-pub struct Node {
+#[derive(Debug)]
+pub struct Node<T> {
     pub host: String,
     pub port: u16,
+    pub client_ref: RwLock<Option<T>>,
 }
 
-impl Node {
+impl <T> Node<T> {
 
     pub fn to_socket_addr(&self) -> Result<SocketAddr, RustDFSError> {
         let err = || {
-            RustDFSError{
+            RustDFSError {
                 kind: Kind::ConfigError,
                 message: format!("Invalid address: {}:{}", self.host, self.port),
             }
