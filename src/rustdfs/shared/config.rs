@@ -1,18 +1,16 @@
-use super::node::Node;
-use crate::rustdfs::shared::error::RustDFSError;
-
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use serde::Deserialize;
 use toml;
 
+use super::error::RustDFSError;
+use super::result::Result;
+
 const CONFIG_FILE_GLOBAL: &str = "/etc/rustdfs/rdfsconf.toml";
 
 #[derive(Deserialize)]
 pub struct RustDFSConfig {
-    #[serde(rename = "self")]
-    pub self_config: SelfConfig,
     #[serde(rename = "name-node")]
     pub name_nodes: HashMap<String, NameNodeConfig>,
     #[serde(rename = "data-node")]
@@ -25,6 +23,8 @@ pub struct NameNodeConfig {
     pub host: String,
     #[serde(rename = "port")]
     pub port: u16,
+    #[serde(rename = "log-file", default = "default_log_file")]
+    pub log_file: String,
 }
 
 #[derive(Deserialize)]
@@ -35,23 +35,17 @@ pub struct DataNodeConfig {
     pub port: u16,
     #[serde(rename = "data-dir")]
     pub data_dir: String,
-}
-
-#[derive(Deserialize)]
-pub struct SelfConfig {
-    #[serde(rename = "host")]
-    pub host: String,
-    #[serde(rename = "port")]
-    pub port: u16,
+    #[serde(rename = "log-file", default = "default_log_file")]
+    pub log_file: String,
 }
 
 impl RustDFSConfig {
 
-    pub fn new() -> Result<Self, RustDFSError> {
+    pub fn new() -> Result<Self> {
         return Self::extract_to_config(CONFIG_FILE_GLOBAL);
     }
 
-    fn extract_to_config(path: &str) -> Result<Self, RustDFSError> {
+    fn extract_to_config(path: &str) -> Result<Self> {
         let contents: String = Self::extract_to_string(path)?;
         let res: Self = toml::from_str(&contents)
             .map_err(|e| { RustDFSError::err_toml_parse(e) })?;
@@ -59,7 +53,7 @@ impl RustDFSConfig {
         return Ok(res);
     }
 
-    fn extract_to_string(path: &str) -> Result<String, RustDFSError> {
+    fn extract_to_string(path: &str) -> Result<String> {
         let mut contents: String = String::new();
 
         File::open(path)
@@ -69,4 +63,8 @@ impl RustDFSConfig {
 
         return Ok(contents);
     }
+}
+
+fn default_log_file() -> String {
+    "/var/log/rustdfs".to_string()
 }

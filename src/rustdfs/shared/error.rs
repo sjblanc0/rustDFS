@@ -2,7 +2,6 @@ use tonic::Status;
 use tonic::transport::Error as TonicError;
 use toml::de::Error as TomlError;
 use std::io::Error as IoError;
-use std::sync::PoisonError;
 
 #[derive(Debug)]
 pub struct RustDFSError {
@@ -14,7 +13,6 @@ pub struct RustDFSError {
 pub enum Kind {
     ConfigError,
     DataNodeServiceError,
-    AsyncLockError,
 }
 
 impl RustDFSError {
@@ -42,8 +40,29 @@ impl RustDFSError {
 
     pub fn err_invalid_data_dir(path: &str) -> Self {
         RustDFSError {
-            kind: Kind::ConfigError,
+            kind: Kind::DataNodeServiceError,
             message: format!("Invalid data directory path: {}", path),
+        }
+    }
+
+    pub fn err_create_data_dir(path: &str, e: IoError) -> Self {
+        RustDFSError {
+            kind: Kind::DataNodeServiceError,
+            message: format!("Failed to create data directory '{}': {}", path, e),
+        }
+    }
+
+    pub fn err_write_block(path: &str, e: IoError) -> Self {
+        RustDFSError {
+            kind: Kind::DataNodeServiceError,
+            message: format!("Error writing block to '{}': {}", path, e),
+        }
+    }
+
+    pub fn err_read_block(path: &str, e: IoError) -> Self {
+        RustDFSError {
+            kind: Kind::DataNodeServiceError,
+            message: format!("Error reading block from '{}': {}", path, e),
         }
     }
 
@@ -82,10 +101,10 @@ impl RustDFSError {
         }
     }
 
-    pub fn err_client_lock<T>(e: PoisonError<T>) -> Self {
+    pub fn err_create_log_dir(path: &str, e: IoError) -> Self {
         RustDFSError {
-            kind: Kind::AsyncLockError,
-            message: format!("{}", e),
+            kind: Kind::ConfigError,
+            message: format!("Failed to create log directory '{}': {}", path, e),
         }
     }
 }

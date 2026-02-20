@@ -1,33 +1,33 @@
+use std::fs;
 use std::collections::HashMap;
-use std::convert::identity;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::fs::{self, File};
 use tokio::sync::RwLock;
 use futures::future::join_all;
 
-use tonic::{Request, Response, Status, client};
+use tonic::{Request, Response, Status};
 use tonic::transport::{Server, Channel};
 use tonic_reflection::server::Builder;
 
-use super::data_dir::DataDir;
+use super::data_mgr::DataDirManager;
 use super::proto::data_node_server::{DataNode, DataNodeServer};
 use super::proto::data_node_client::DataNodeClient;
 use super::proto::{WriteRequest, WriteResponse, ReadRequest, ReadResponse, PingMessage};
 use super::proto::FILE_DESCRIPTOR_SET;
 
-use crate::rustdfs::data_node::data_dir;
 use crate::rustdfs::shared::node::{self, Node};
-use crate::rustdfs::shared::error::{RustDFSError, Kind};
-use crate::rustdfs::shared::config::{self, RustDFSConfig};
+use crate::rustdfs::shared::error::RustDFSError;
+use crate::rustdfs::shared::result::{Result, ServiceResult};
+use crate::rustdfs::shared::config::RustDFSConfig;
+use crate::rustdfs::shared::logging::{LogManager, LogLevel};
+use crate::rustdfs::shared::args::RustDFSArgs;
 
 type DataNodeConn = Node<DataNodeClient<Channel>>;
 
 #[derive(Debug)]
 pub struct DataNodeService {
     pub id: String,
-    pub data_dir: DataDir,
     pub data_nodes: HashMap<String, DataNodeConn>,
+    pub data_mgr: DataDirManager,
+    pub log_mgr: LogManager,
 }
 
 #[tonic::async_trait]
@@ -36,28 +36,27 @@ impl DataNode for DataNodeService {
     async fn write_data(
         &self,
         request: Request<WriteRequest>,
-    ) -> Result<Response<WriteResponse>, Status> {
+    ) -> ServiceResult<Response<WriteResponse>> {
         let request_ref = request.get_ref();
-        let path = format!("{}/{}", self.data_dir.safe_path_str, request_ref.block_id);
         let mut repls = Vec::new();
 
-
-        let write_res = File::create(path)?
-            .write_all(&request_ref.data);
-        
-        if write_res.is_err() {
-            let file_err = format!("Bad block ID: {}", request_ref.block_id).to_string();
-            return Err(Status::invalid_argument(file_err));
-        }
+        self.data_mgr.write_block(&request_ref.block_id, &request_ref.data)
+            .map_err(|e| {
+                self.log_mgr.write(LogLevel::Error, || e.message.clone());
+                Status::invalid_argument(e.message.clone())
+            })?;
 
         for id in request_ref.replica_node_ids.iter() {
             if id == &self.id {
                 continue;
             }
 
-            let node_err = format!("Bad replica node ID: {}", id).to_string();
             let repl_node = self.data_nodes.get(id)
-                .ok_or_else(|| Status::invalid_argument(node_err))?;
+                .ok_or_else(|| { 
+                    let log = format!("Bad replica node ID: {}", id).to_string();
+                    self.log_mgr.write(LogLevel::Error, || log.clone());
+                    Status::invalid_argument(log)
+                })?;
 
             repls.push(
                 self.fwd_write(
@@ -71,28 +70,50 @@ impl DataNode for DataNodeService {
             );
         }
 
-        join_all(repls).await;
+        for res in join_all(repls).await {
+            if res.is_err() {
+                let log = format!("Error forwarding write to replica: {}", res.err().unwrap().message);
+                self.log_mgr.write(LogLevel::Error, || log.clone());
+                return Err(Status::internal(log));
+            }
+        }
+
+        self.log_mgr.write(
+            LogLevel::Info, 
+            || format!("Wrote block {} with {} bytes", request_ref.block_id, request_ref.data.len())
+        );
+
         Ok(Response::new(WriteResponse { success: true }))
     }
 
     async fn read_data(
         &self,
         request: Request<ReadRequest>,
-    ) -> Result<Response<ReadResponse>, Status> {
-        println!("Got a read data request: {:?}", request);
+    ) -> ServiceResult<Response<ReadResponse>> {
+        let request_ref = request.get_ref();
+        let data: Vec<u8> = self.data_mgr.read_block(&request_ref.block_id)
+            .map_err(|_| {
+                let log = format!("Block not found: {}", request_ref.block_id);
+                self.log_mgr.write(LogLevel::Error, || log.clone());
+                Status::not_found(log)
+            })?;
+        
+        self.log_mgr.write(
+            LogLevel::Info, 
+            || format!("Read block {} with {} bytes", request_ref.block_id, data.len())
+        );
 
-        let reply = ReadResponse {
-            data: vec![],
-        };
-
-        Ok(Response::new(reply))
+        Ok(Response::new(ReadResponse { data: data }))
     }
 
     async fn ping(
         &self,
         request: Request<PingMessage>,
-    ) -> Result<Response<PingMessage>, Status> {
-        println!("Got a ping: {:?}", request);
+    ) -> ServiceResult<Response<PingMessage>> {
+        self.log_mgr.write(
+            LogLevel::Info, 
+            || format!("Received ping from node {}", request.get_ref().node_id)
+        );
 
         let reply = PingMessage {
             node_id: self.id.clone(),
@@ -109,15 +130,17 @@ impl DataNode for DataNodeService {
 impl DataNodeService {
 
     pub fn new(
-        config: RustDFSConfig
-    ) -> Result<Self, RustDFSError> {
+        args: RustDFSArgs,
+        config: RustDFSConfig,
+    ) -> Result<Self> {
         let mut id: Option<String> = None;
-        let mut data_dir: Option<DataDir> = None;
+        let mut data_dir: Option<String> = None;
         let mut data_nodes: HashMap<String, DataNodeConn> = HashMap::new();
+        let mut log_file: Option<String> = None;
 
         let self_node = DataNodeConn {
-            host: config.self_config.host,
-            port: config.self_config.port,
+            host: args.host,
+            port: args.port,
             client_ref: RwLock::new(None),
         };
 
@@ -130,24 +153,32 @@ impl DataNodeService {
 
             if data_nodes.get(&k).unwrap().to_socket_addr()? == self_node.to_socket_addr()? {
                 id = Some(k);
-                data_dir = Some(DataDir::new(&dn_config.data_dir)?);
+                data_dir = Some(dn_config.data_dir);
+                log_file = Some(dn_config.log_file);
             }
         }
 
-        if id.is_none() || data_dir.is_none() {
+        if id.is_none() || data_dir.is_none() || log_file.is_none() {
             return Err(RustDFSError::err_misconfigured_svc());
         }
 
         Ok(DataNodeService {
             id: id.unwrap(),
-            data_dir: data_dir.unwrap(),
             data_nodes: data_nodes,
+            data_mgr: DataDirManager::new(
+                &data_dir.unwrap()
+            )?,
+            log_mgr: LogManager::new(
+                log_file.unwrap(),
+                args.log_level,
+                args.silent,
+            )?,
         })
     }
 
     pub async fn serve(
         self,
-    ) -> Result<(), RustDFSError> {
+    ) -> Result<()> {
         let self_node = self.data_nodes.get(&self.id).unwrap();
         let addr: std::net::SocketAddr = self_node.to_socket_addr()?;
 
@@ -158,7 +189,15 @@ impl DataNodeService {
             .build_v1()
             .unwrap();
 
-        println!("DataNodeServer listening at {} on port {}", addr.ip().to_string(), addr.port());
+        self.log_mgr.write(
+            LogLevel::Info, 
+            || format!(
+                "Starting DataNodeServer with ID {} at {} on port {}", 
+                self.id, 
+                addr.ip().to_string(), 
+                addr.port()
+            )
+        );
 
         Server::builder()
             .add_service(svc_reflection)
@@ -174,8 +213,8 @@ impl DataNodeService {
         &self, 
         node: &DataNodeConn, 
         request: WriteRequest,
-    ) -> Result<(), RustDFSError> {
-        self.init_client(node).await?;
+    ) -> Result<()> {
+        self.init_data_conn(node).await?;
 
         node.client_ref
             .write()
@@ -189,10 +228,10 @@ impl DataNodeService {
         Ok(())
     }
 
-    async fn init_client(
+    async fn init_data_conn(
         &self,
         node: &DataNodeConn,
-    ) -> Result<(), RustDFSError> {
+    ) -> Result<()> {
         let client_opt = node.client_ref
             .read()
             .await;

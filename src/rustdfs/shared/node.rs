@@ -1,4 +1,5 @@
 use super::error::{RustDFSError, Kind};
+use super::result::Result;
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::sync::RwLock;
@@ -13,7 +14,7 @@ pub struct Node<T> {
 
 impl <T> Node<T> {
 
-    pub fn to_socket_addr(&self) -> Result<SocketAddr, RustDFSError> {
+    pub fn to_socket_addr(&self) -> Result<SocketAddr> {
         let err = || {
             RustDFSError {
                 kind: Kind::ConfigError,
@@ -28,7 +29,7 @@ impl <T> Node<T> {
             .ok_or_else(|| err())
     }
 
-    pub fn to_endpoint(&self) -> Result<Endpoint, RustDFSError> {
+    pub fn to_endpoint(&self) -> Result<Endpoint> {
         let socket_addr = self.to_socket_addr()?;
         let endpoint = format!("http://{}", socket_addr);
         Ok(Endpoint::from_shared(endpoint)
