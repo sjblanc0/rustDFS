@@ -1,0 +1,24 @@
+[package]
+name = "rustdfs-namenode"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+rustdfs-shared = { path = "../shared", version = "0.0.0" }
+uuid = { version = "1.21.0", features = ["v4", "fast-rng"] }
+rand = "0.9"
+tonic = "0.14"
+prost = "0.14"
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread"] }
+tokio-stream = "0.1"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tonic-reflection = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+
+[[bin]]
+name = "rustDFS-namenode"
+path = "src/main.rs"
+
