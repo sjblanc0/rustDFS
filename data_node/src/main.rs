@@ -1,10 +1,10 @@
-mod data_node;
+mod service;
+mod data_mgr;
 
-use data_node::service::DataNodeService;
-
-use rustdfs_shared::args::RustDFSArgs;
-use rustdfs_shared::result::Result;
-use rustdfs_shared::config::RustDFSConfig;
+use rustdfs_shared::base::args::RustDFSArgs;
+use rustdfs_shared::base::result::Result;
+use rustdfs_shared::base::config::RustDFSConfig;
+use service::DataNodeService;
 
 #[tokio::main]
 async fn main() -> Result<()> {

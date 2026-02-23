@@ -8,8 +8,13 @@ chrono = "0.4.43"
 clap = { version = "4.5.59", features = ["derive"] }
 toml = "0.9.8"
 tonic = "0.14"
+prost = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread"] }
+tonic-prost = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
 
 [lib]
-path = "src/shared.rs"
+path = "src/lib.rs"

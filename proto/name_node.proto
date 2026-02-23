@@ -3,26 +3,28 @@ syntax = "proto3";
 package name_node;
 
 service NameNode {
-    rpc WriteData (WriteRequest) returns (WriteResponse);
-    rpc ReadData (ReadRequest) returns (ReadResponse);
+    rpc Write (stream NameWriteRequest) returns (NameWriteResponse);
+    rpc Read (NameReadRequest) returns (stream NameReadResponse);
 }
 
-message WriteRequest {
+message NameWriteRequest {
     string fileName = 1;
-    int64 size = 2;
-    bytes data = 3;
+    int64 fileSize = 2;
+    int64 dataSize = 3;
+    bytes data = 4;
 }
 
-message WriteResponse {
+message NameWriteResponse {
     bool success = 1;
 }
 
-message ReadRequest {
+message NameReadRequest {
     string fileName = 1;
 }
 
-message ReadResponse {
+message NameReadResponse {
     string fileName = 1;
-    int64 size = 2;
-    bytes data = 3;
+    int64 fileSize = 2;
+    int64 dataSize = 3;
+    bytes data = 4;
 }

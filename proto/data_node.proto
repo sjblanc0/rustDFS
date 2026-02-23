@@ -3,30 +3,30 @@ syntax = "proto3";
 package data_node;
 
 service DataNode {
-    rpc WriteData (WriteRequest) returns (WriteResponse);
-    rpc ReadData (ReadRequest) returns (ReadResponse);
-    rpc Ping (PingMessage) returns (PingMessage);
+    rpc Write (DataWriteRequest) returns (DataWriteResponse);
+    rpc Read (DataReadRequest) returns (DataReadResponse);
+    rpc Ping (DataPing) returns (DataPing);
 }
 
-message WriteRequest {
+message DataWriteRequest {
     string blockID = 1;
     bytes data = 2;
     repeated string replicaNodeIds = 3;
 }
 
-message WriteResponse {
+message DataWriteResponse {
     bool success = 1;
 }
 
-message ReadRequest {
+message DataReadRequest {
     string blockID = 1;
 }
 
-message ReadResponse {
+message DataReadResponse {
     bytes data = 1;
 }
 
-message PingMessage {
+message DataPing {
     string nodeID = 1;
     int64 timestamp = 2;
 }
