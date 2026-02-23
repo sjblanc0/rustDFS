@@ -75,7 +75,7 @@ impl DataNode for DataNodeService {
             .await
             .into_iter()
             .enumerate()
-            .filter(|(i, r)| r.is_err() || r.as_ref().unwrap().success == false)
+            .filter(|(_, r)| r.is_err() || r.as_ref().unwrap().success == false)
             .map(|(i, _)| ids[i].clone())
             .collect::<Vec<_>>();
 
