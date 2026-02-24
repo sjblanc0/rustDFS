@@ -18,7 +18,7 @@ use rustdfs_shared::base::config::RustDFSConfig;
 use rustdfs_shared::base::args::RustDFSArgs;
 use rustdfs_shared::base::node::{GenericNode, Node};
 
-use rustdfs_shared::data_node::proto::{DataWriteRequest, DataWriteResponse};
+use rustdfs_shared::data_node::proto::DataWriteRequest;
 use rustdfs_shared::data_node::conn::DataNodeConn;
 
 type ReadStream = Pin<Box<dyn Stream<Item = ServiceResult<NameReadResponse>> + Send>>;
