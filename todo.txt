@@ -2,4 +2,7 @@
  - audit errors and improve messages
  - collapse service errors into Status
  - extract shared generic parent type for DataNodeConn
+ - store file names for NameNode in binary tree
+ - replace format strings with functions
+
  
