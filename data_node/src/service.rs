@@ -15,6 +15,7 @@ use rustdfs_shared::base::args::RustDFSArgs;
 use rustdfs_shared::base::node::{GenericNode, Node};
 
 use rustdfs_shared::data_node::conn::DataNodeConn;
+use rustdfs_shared::data_node::mgr::DataNodeManager;
 use rustdfs_shared::data_node::proto::data_node_server::{DataNode, DataNodeServer};
 use rustdfs_shared::data_node::proto::{DataWriteRequest, DataWriteResponse, DataReadRequest, DataReadResponse, DataPing};
 use rustdfs_shared::data_node::proto::DATA_NODE_FILE_DESCRIPTOR_SET;
@@ -22,7 +23,8 @@ use rustdfs_shared::data_node::proto::DATA_NODE_FILE_DESCRIPTOR_SET;
 #[derive(Debug)]
 pub struct DataNodeService {
     id: String,
-    data_nodes: HashMap<String, DataNodeConn>,
+    self_node: GenericNode,
+    data_nodes: DataNodeManager,
     data_mgr: DataDirManager,
     log_mgr: LogManager,
 }
@@ -48,26 +50,21 @@ impl DataNode for DataNodeService {
             if id == &self.id {
                 continue;
             }
-
-            let repl_node = self.data_nodes.get(id)
-                .ok_or_else(|| { 
-                    let log = format!("Bad replica node ID: {}", id).to_string();
-                    self.log_mgr.write(LogLevel::Error, || log.clone());
-                    Status::invalid_argument(log)
-                })?;
             
             ids.push(
                 id.clone()
             );
 
             repls.push(
-                repl_node.write(
-                    DataWriteRequest {
-                        block_id: request_ref.block_id.clone(),
-                        data: request_ref.data.clone(),
-                        replica_node_ids: vec![],
-                    }
-                )
+                self.data_nodes
+                    .get_conn(id)?
+                    .write(
+                        DataWriteRequest {
+                            block_id: request_ref.block_id.clone(),
+                            data: request_ref.data.clone(),
+                            replica_node_ids: vec![],
+                        }
+                    )
             );
         }
 
@@ -159,6 +156,7 @@ impl DataNodeService {
             ));
 
             if data_nodes.get(&k).unwrap().to_socket_addr()? == self_node.to_socket_addr()? {
+                data_nodes.remove(&k);
                 id = Some(k);
                 data_dir = Some(dn_config.data_dir);
                 log_file = Some(dn_config.log_file);
@@ -166,28 +164,34 @@ impl DataNodeService {
         }
 
         if id.is_none() || data_dir.is_none() || log_file.is_none() {
-            return Err(RustDFSError::err_misconfigured_svc_data());
+            return Err(
+                RustDFSError::err_misconfigured_svc_data()
+            );
         }
 
-        Ok(DataNodeService {
-            id: id.unwrap(),
-            data_nodes: data_nodes,
-            data_mgr: DataDirManager::new(
-                &data_dir.unwrap()
-            )?,
-            log_mgr: LogManager::new(
-                log_file.unwrap(),
-                args.log_level,
-                args.silent,
-            )?,
-        })
+        Ok(
+            DataNodeService {
+                id: id.unwrap(),
+                self_node: self_node,
+                data_nodes: DataNodeManager::new(
+                    data_nodes,
+                ),
+                data_mgr: DataDirManager::new(
+                    &data_dir.unwrap()
+                )?,
+                log_mgr: LogManager::new(
+                    log_file.unwrap(),
+                    args.log_level,
+                    args.silent,
+                )?,
+            }
+        )
     }
 
     pub async fn serve(
         self,
     ) -> Result<()> {
-        let self_node = self.data_nodes.get(&self.id).unwrap();
-        let addr: std::net::SocketAddr = self_node.to_socket_addr()?;
+        let addr: std::net::SocketAddr = self.self_node.to_socket_addr()?;
 
         // should remove this or make it optional via config
         // only added this for testing

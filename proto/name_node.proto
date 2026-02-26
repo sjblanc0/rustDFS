@@ -9,8 +9,6 @@ service NameNode {
 
 message NameWriteRequest {
     string fileName = 1;
-    int64 fileSize = 2;
-    int64 dataSize = 3;
     bytes data = 4;
 }
 
@@ -24,7 +22,5 @@ message NameReadRequest {
 
 message NameReadResponse {
     string fileName = 1;
-    int64 fileSize = 2;
-    int64 dataSize = 3;
     bytes data = 4;
 }

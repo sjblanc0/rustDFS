@@ -4,5 +4,7 @@
  - extract shared generic parent type for DataNodeConn
  - store file names for NameNode in binary tree
  - replace format strings with functions
-
+ - implement inodes / directory structure
+ - notify other name nodes
+ - stream blocks in order in response
  

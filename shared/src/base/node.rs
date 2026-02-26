@@ -3,6 +3,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use super::error::RustDFSError;
 use super::result::Result;
 
+#[derive(Debug)]
 pub struct GenericNode {
     pub host: String,
     pub port: u16,

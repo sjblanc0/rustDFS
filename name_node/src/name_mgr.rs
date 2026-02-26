@@ -1,11 +1,22 @@
 use std::collections::HashMap;
+use rand::{prelude::IndexedRandom, seq::SliceRandom};
+
+use rustdfs_shared::base::result::ServiceResult;
 
 use tokio::sync::RwLock;
+use tonic::Status;
+
+type FileMapping = HashMap<String, Vec<BlockDescriptor>>;
 
 #[derive(Debug)]
 pub struct NameManager {
-    files: RwLock<HashMap<String, Vec<String>>>,
-    blocks: RwLock<HashMap<String, Vec<String>>>,
+    files: RwLock<FileMapping>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockDescriptor {
+    pub id: String,
+    pub node_ids: Vec<String>,
 }
 
 impl NameManager {
@@ -14,27 +25,49 @@ impl NameManager {
     // name data on init
     pub fn new() -> Self {
         NameManager {
-            files: RwLock::new(HashMap::new()),
-            blocks: RwLock::new(HashMap::new()),
+            files: RwLock::new(
+                HashMap::new(),
+            ),
         }
     }
 
     pub async fn add_file(
         &self, 
-        file_name: &str, 
-        blocks: Vec<String>,
-        nodes: Vec<String>,
+        file_name: String, 
+        blocks: Vec<BlockDescriptor>,
     ) {
-        for id in blocks.iter() {
-            self.blocks
-                .write()
-                .await
-                .insert(id.clone(), nodes.clone());
-        }
-
-        self.files
+        let mut files = self.files
             .write()
-            .await
-            .insert(file_name.to_string(), blocks);
+            .await;
+
+        files.insert(file_name.to_string(), blocks);
     }
+
+    pub async fn get_blocks(
+        &self, 
+        file_name: &str,
+    ) -> ServiceResult<Vec<BlockDescriptor>> {
+        let files = self.files
+            .read()
+            .await;
+
+        Ok(
+            files[file_name]
+                .clone()
+        )
+    }
+}
+
+fn status_err_unknown_file(
+    file_name: &str
+) -> Status {
+    let msg = format!("Unknown file: {}", file_name.clone());
+    Status::internal(msg)
+}
+
+fn status_err_unknown_block(
+    block_id: &str
+) -> Status {
+    let msg = format!("Unknown block ID: {}", block_id.clone());
+    Status::internal(msg)
 }
