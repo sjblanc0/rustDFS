@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
+use tokio::sync::RwLock;
+
 use rustdfs_shared::base::result::ServiceResult;
 
-use tokio::sync::RwLock;
-use tonic::Status;
 
 type FileMapping = HashMap<String, Vec<BlockDescriptor>>;
 
@@ -55,18 +55,4 @@ impl NameManager {
                 .clone()
         )
     }
-}
-
-fn status_err_unknown_file(
-    file_name: &str
-) -> Status {
-    let msg = format!("Unknown file: {}", file_name);
-    Status::internal(msg)
-}
-
-fn status_err_unknown_block(
-    block_id: &str
-) -> Status {
-    let msg = format!("Unknown block ID: {}", block_id);
-    Status::internal(msg)
 }

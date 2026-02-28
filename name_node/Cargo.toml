@@ -22,4 +22,3 @@ tonic-prost-build = "0.14"
 [[bin]]
 name = "rustDFS-namenode"
 path = "src/main.rs"
-

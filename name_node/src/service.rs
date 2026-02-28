@@ -12,23 +12,22 @@ use tonic::{Request, Response, Status, Streaming};
 use tonic::transport::Server;
 use tonic_reflection::server::Builder;
 
-use crate::name_mgr::BlockDescriptor;
-use super::name_mgr::NameManager;
-use super::proto::name_node_server::NameNode;
-use super::proto::{NameWriteRequest, NameWriteResponse, NameReadRequest, NameReadResponse};
-use super::proto::name_node_server::NameNodeServer;
-use super::proto::NAME_NODE_FILE_DESCRIPTOR_SET;
-
 use rustdfs_shared::base::error::RustDFSError;
 use rustdfs_shared::base::logging::{LogManager, LogLevel};
 use rustdfs_shared::base::result::{Result, ServiceResult};
 use rustdfs_shared::base::config::RustDFSConfig;
 use rustdfs_shared::base::args::RustDFSArgs;
 use rustdfs_shared::base::node::{GenericNode, Node};
-
 use rustdfs_shared::data_node::proto::{DataReadRequest, DataWriteRequest};
 use rustdfs_shared::data_node::conn::DataNodeConn;
 use rustdfs_shared::data_node::mgr::DataNodeManager;
+
+use crate::name_mgr::BlockDescriptor;
+use crate::name_mgr::NameManager;
+use crate::proto::name_node_server::NameNode;
+use crate::proto::{NameWriteRequest, NameWriteResponse, NameReadRequest, NameReadResponse};
+use crate::proto::name_node_server::NameNodeServer;
+use crate::proto::NAME_FILE_DESCRIPTOR_SET;
 
 type ReadStream = Pin<Box<dyn Stream<Item = ServiceResult<NameReadResponse>> + Send>>;
 
@@ -297,7 +296,7 @@ impl NameNodeService {
         // should remove this or make it optional via config
         // only added this for testing
         let svc_reflection = Builder::configure()
-            .register_encoded_file_descriptor_set(NAME_NODE_FILE_DESCRIPTOR_SET)
+            .register_encoded_file_descriptor_set(NAME_FILE_DESCRIPTOR_SET)
             .build_v1()
             .unwrap();
 

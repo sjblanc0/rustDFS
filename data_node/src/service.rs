@@ -5,20 +5,19 @@ use tonic::{Request, Response, Status};
 use tonic::transport::Server;
 use tonic_reflection::server::Builder;
 
-use super::data_mgr::DataDirManager;
-
 use rustdfs_shared::base::error::RustDFSError;
 use rustdfs_shared::base::result::{Result, ServiceResult};
 use rustdfs_shared::base::config::RustDFSConfig;
 use rustdfs_shared::base::logging::{LogManager, LogLevel};
 use rustdfs_shared::base::args::RustDFSArgs;
 use rustdfs_shared::base::node::{GenericNode, Node};
-
 use rustdfs_shared::data_node::conn::DataNodeConn;
 use rustdfs_shared::data_node::mgr::DataNodeManager;
 use rustdfs_shared::data_node::proto::data_node_server::{DataNode, DataNodeServer};
 use rustdfs_shared::data_node::proto::{DataWriteRequest, DataWriteResponse, DataReadRequest, DataReadResponse, DataPing};
-use rustdfs_shared::data_node::proto::DATA_NODE_FILE_DESCRIPTOR_SET;
+use rustdfs_shared::data_node::proto::DATA_FILE_DESCRIPTOR_SET;
+
+use crate::data_mgr::DataDirManager;
 
 #[derive(Debug)]
 pub struct DataNodeService {
@@ -196,7 +195,7 @@ impl DataNodeService {
         // should remove this or make it optional via config
         // only added this for testing
         let svc_reflection = Builder::configure()
-            .register_encoded_file_descriptor_set(DATA_NODE_FILE_DESCRIPTOR_SET)
+            .register_encoded_file_descriptor_set(DATA_FILE_DESCRIPTOR_SET)
             .build_v1()
             .unwrap();
 
