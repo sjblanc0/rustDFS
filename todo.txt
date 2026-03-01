@@ -7,4 +7,6 @@
  - implement inodes / directory structure
  - notify other name nodes
  - stream blocks in order in response
+ - daemonize client
+ - handle NameNode read/write more memory efficiently
  

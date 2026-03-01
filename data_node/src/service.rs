@@ -39,7 +39,8 @@ impl DataNode for DataNodeService {
         let mut repls = Vec::new();
         let mut ids = Vec::new();
 
-        self.data_mgr.write_block(&request_ref.block_id, &request_ref.data)
+        self.data_mgr
+            .write_block(&request_ref.block_id, &request_ref.data)
             .map_err(|e| {
                 self.log_mgr.write(LogLevel::Error, || e.message.clone());
                 Status::invalid_argument(e.message.clone())
