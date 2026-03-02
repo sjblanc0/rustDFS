@@ -13,12 +13,10 @@ services:
       context: ..
       dockerfile: example/Dockerfile.datanode
       args:
-        DATANODE_HOST: datanode0
-        DATANODE_PORT: "5001"
+        NODE_ID: dn0
     hostname: datanode0
     environment:
-      DATANODE_HOST: datanode0
-      DATANODE_PORT: "5001"
+      NODE_ID: dn0
     ports:
       - "5001:5001"
     networks:
@@ -29,12 +27,10 @@ services:
       context: ..
       dockerfile: example/Dockerfile.datanode
       args:
-        DATANODE_HOST: datanode1
-        DATANODE_PORT: "5002"
+        NODE_ID: dn1
     hostname: datanode1
     environment:
-      DATANODE_HOST: datanode1
-      DATANODE_PORT: "5002"
+      NODE_ID: dn1
     ports:
       - "5002:5002"
     networks:
@@ -45,12 +41,10 @@ services:
       context: ..
       dockerfile: example/Dockerfile.datanode
       args:
-        DATANODE_HOST: datanode2
-        DATANODE_PORT: "5003"
+        NODE_ID: dn2
     hostname: datanode2
     environment:
-      DATANODE_HOST: datanode2
-      DATANODE_PORT: "5003"
+      NODE_ID: dn2
     ports:
       - "5003:5003"
     networks:

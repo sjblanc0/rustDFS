@@ -233,34 +233,27 @@ impl NameNodeService {
         args: RustDFSArgs,
         config: RustDFSConfig,
     ) -> Result<Self> {
-        let mut id: Option<String> = None;
-        let mut log_file: Option<String> = None;
-        let mut data_nodes: HashMap<String, DataNodeConn> = HashMap::new();
-        
-        let self_node = GenericNode {
-            host: args.host.clone(),
-            port: args.port,
-        };
+        let mut log_file = None;
+        let mut data_nodes = HashMap::new();
+        let mut node = None;
 
         for (k, nn_config) in config.name_nodes {
-            let candidate = GenericNode {
-                host: args.host.clone(),
-                port: args.port,
-            };
-
-            if candidate.to_socket_addr()? == self_node.to_socket_addr()? {
-                id = Some(k);
+            if k == args.id {
                 log_file = Some(nn_config.log_file);
+                node = Some(GenericNode {
+                    host: nn_config.host,
+                    port: nn_config.port,
+                });
             }
         }
 
-        if id.is_none() || log_file.is_none() {
+        if node.is_none() || log_file.is_none() {
             return Err(RustDFSError::err_misconfigured_svc_data());
         }
 
         for (k, dn_config) in config.data_nodes {
-            data_nodes.insert(k, DataNodeConn::new(
-                id.clone().unwrap(),
+            data_nodes.insert(k.clone(), DataNodeConn::new(
+                k,
                 dn_config.host,
                 dn_config.port,
             ));
@@ -268,8 +261,8 @@ impl NameNodeService {
 
         Ok(
             NameNodeService {
-                id: id.unwrap(),
-                self_node: self_node,
+                id: args.id,
+                self_node: node.unwrap(),
                 replica_ct: config.replica_count,
                 name_mgr: NameManager::new(), // TODO: handle init
                 data_nodes: Arc::new(

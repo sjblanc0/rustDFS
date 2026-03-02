@@ -138,32 +138,32 @@ impl DataNodeService {
         args: RustDFSArgs,
         config: RustDFSConfig,
     ) -> Result<Self> {
-        let mut id: Option<String> = None;
         let mut data_dir: Option<String> = None;
         let mut data_nodes: HashMap<String, DataNodeConn> = HashMap::new();
         let mut log_file: Option<String> = None;
-
-        let self_node = GenericNode {
-            host: args.host,
-            port: args.port,
-        };
+        let mut node: Option<GenericNode> = None;
 
         for (k, dn_config) in config.data_nodes {
+            if args.id == k {
+                node = Some(
+                    GenericNode {
+                        host: dn_config.host,
+                        port: dn_config.port,
+                    }
+                );
+                data_dir = Some(dn_config.data_dir);
+                log_file = Some(dn_config.log_file);
+                continue;
+            }
+            
             data_nodes.insert(k.clone(), DataNodeConn::new(
                 k.clone(),
                 dn_config.host,
                 dn_config.port,
             ));
-
-            if data_nodes.get(&k).unwrap().to_socket_addr()? == self_node.to_socket_addr()? {
-                data_nodes.remove(&k);
-                id = Some(k);
-                data_dir = Some(dn_config.data_dir);
-                log_file = Some(dn_config.log_file);
-            }
         }
 
-        if id.is_none() || data_dir.is_none() || log_file.is_none() {
+        if node.is_none() || data_dir.is_none() || log_file.is_none() {
             return Err(
                 RustDFSError::err_misconfigured_svc_data()
             );
@@ -171,8 +171,8 @@ impl DataNodeService {
 
         Ok(
             DataNodeService {
-                id: id.unwrap(),
-                self_node: self_node,
+                id: args.id,
+                self_node: node.unwrap(),
                 data_nodes: DataNodeManager::new(
                     data_nodes,
                 ),

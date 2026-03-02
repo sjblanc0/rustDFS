@@ -6,10 +6,7 @@ use super::logging::LogLevel;
 #[command(version, about, long_about = None)]
 pub struct RustDFSArgs {
     #[arg(long)]
-    pub host: String,
-
-    #[arg(long)]
-    pub port: u16,
+    pub id: String,
 
     #[arg(short, long, default_value_t = false)]
     pub silent: bool,

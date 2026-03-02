@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/ap
 
 WORKDIR /build
 COPY . .
-RUN cargo build --release --bin rustdfs-cli
+RUN cargo build --release --bin rustDFS-client
 
 # ── runtime stage ─────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -15,5 +15,5 @@ RUN apt-get update \
     && apt-get install -y ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/example/files /usr/local/share/rustDFS/files
-COPY --from=builder /build/target/release/rustdfs-cli /usr/local/bin/rustdfs-cli
+COPY --from=builder /build/example/files /root/files
+COPY --from=builder /build/target/release/rustDFS-client /usr/local/bin/rustDFS-client

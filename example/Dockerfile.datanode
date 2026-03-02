@@ -19,10 +19,9 @@ RUN mkdir -p /etc/rustdfs /var/log/rustdfs /var/lib/rustdfs/data
 COPY --from=builder /build/target/release/rustDFS-datanode /usr/local/bin/rustDFS-datanode
 COPY example/rdfsconf.toml /etc/rustdfs/rdfsconf.toml
 
-# overridden per-service in docker-compose with DATANODE_HOST / DATANODE_PORT
-ARG DATANODE_HOST=datanode0
-ARG DATANODE_PORT=5001
+# overridden per-service in docker-compose with NODE_ID
+ARG NODE_ID=dn0
 
 EXPOSE 5001
 
-ENTRYPOINT ["sh", "-c", "rustDFS-datanode --host $DATANODE_HOST --port $DATANODE_PORT"]
+ENTRYPOINT ["sh", "-c", "rustDFS-datanode --id $NODE_ID"]

@@ -22,4 +22,4 @@ COPY example/rdfsconf.toml /etc/rustdfs/rdfsconf.toml
 
 EXPOSE 5000
 
-ENTRYPOINT ["rustDFS-namenode", "--host", "namenode", "--port", "5000"]
+ENTRYPOINT ["rustDFS-namenode", "--id", "nn0"]

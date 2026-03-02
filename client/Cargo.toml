@@ -1,5 +1,5 @@
 [package]
-name = "rustdfs-cli"
+name = "rustdfs-client"
 version = "0.1.0"
 edition = "2024"
 
@@ -13,3 +13,7 @@ tonic-prost = "0.14"
 
 [build-dependencies]
 tonic-prost-build = "0.14"
+
+[[bin]]
+name = "rustDFS-client"
+path = "src/main.rs"
