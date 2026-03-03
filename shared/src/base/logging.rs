@@ -17,6 +17,7 @@ pub struct LogManager {
 pub enum LogLevel {
     Error,
     Info,
+    Debug,
 }
 
 impl LogManager {

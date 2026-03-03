@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use rand::seq::SliceRandom;
-use futures::future::join_all;
+use futures::Future;
+use futures::pin_mut;
 use uuid::Uuid;
+use mpsc::Sender;
 
 use tokio::sync::mpsc;
 use tokio_stream::{Stream, StreamExt};
@@ -18,7 +20,7 @@ use rustdfs_shared::base::result::{Result, ServiceResult};
 use rustdfs_shared::base::config::RustDFSConfig;
 use rustdfs_shared::base::args::RustDFSArgs;
 use rustdfs_shared::base::node::{GenericNode, Node};
-use rustdfs_shared::data_node::proto::{DataReadRequest, DataWriteRequest};
+use rustdfs_shared::data_node::proto::{DataReadRequest, DataReadResponse, DataWriteRequest, DataWriteResponse};
 use rustdfs_shared::data_node::conn::DataNodeConn;
 use rustdfs_shared::data_node::mgr::DataNodeManager;
 
@@ -31,6 +33,9 @@ use crate::proto::NAME_FILE_DESCRIPTOR_SET;
 
 type ReadStream = Pin<Box<dyn Stream<Item = ServiceResult<NameReadResponse>> + Send>>;
 
+const WRITE_WINDOW: usize = 8;
+const READ_WINDOW: usize = 8;
+
 #[derive(Debug)]
 pub struct NameNodeService {
     id: String,
@@ -38,7 +43,7 @@ pub struct NameNodeService {
     replica_ct: u32,
     name_mgr: NameManager,
     data_nodes: Arc<DataNodeManager>,
-    log_mgr: Arc<LogManager>,
+    log_mgr: LogManager,
 }
 
 #[tonic::async_trait]
@@ -54,7 +59,6 @@ impl NameNode for NameNodeService {
         let mut blocks = Vec::new();
         let mut stream = request.into_inner();
         let mut writes = Vec::new();
-        let mut err_req = None;
 
         while let Some(req) = stream.next().await {
             match req {
@@ -75,7 +79,9 @@ impl NameNode for NameNodeService {
                         }
                     );
 
-                    writes.push( 
+                    writes.push((
+                        prim.clone(),
+                        block_id.clone(),
                         self.data_nodes
                             .get_conn(&prim)?
                             .write(
@@ -85,46 +91,33 @@ impl NameNode for NameNodeService {
                                     replica_node_ids: repls,
                                 }
                             )
-                    );
+                    ));
+
+                    if writes.len() >= WRITE_WINDOW {
+                        drain_writes(&self.log_mgr, &mut writes).await?;
+                    }
                 }
-                Err(e) => {
-                    err_req = Some(e);
+                Err(_) => {
                     break;
                 }
             }
         }
-        
-        if err_req.is_some() {
-            let unwrapped = err_req.as_ref().unwrap();
-            let log = format!("Error in request stream: {}", unwrapped.message());
-            self.log_mgr.write(LogLevel::Error, || log.clone());
-            return Err(unwrapped.clone());
-        }
 
-        let failed = join_all(writes)
-            .await
-            .into_iter()
-            .enumerate()
-            .filter(|(_, r)| {
-                r.is_err() || r.as_ref().unwrap().success == false
-            })
-            .map(|(i, _)| {
-                (blocks[i].id.clone(), blocks[i].node_ids[0].clone())
-            })
-            .collect::<Vec<_>>();
-
-        if failed.len() > 0 {
-            for (block, node) in failed.iter() {
-                let log = format!("Failed to write block (block = {}) (node = {})", block, node);
-                self.log_mgr.write(LogLevel::Error, || log.clone());
-            }
-
-            return Err(status_err_writing(failed));
+        if !writes.is_empty() {
+            drain_writes(&self.log_mgr, &mut writes).await?;
         }
 
         self.name_mgr
-            .add_file(name.unwrap(), blocks)
+            .add_file(name.clone().unwrap(), blocks)
             .await;
+
+        self.log_mgr.write(
+            LogLevel::Info, 
+            || format!(
+                "Wrote file {} to data nodes", 
+                name.unwrap()
+            )
+        );
 
         Ok(
             Response::new(
@@ -140,83 +133,91 @@ impl NameNode for NameNodeService {
         request: Request<NameReadRequest>,
     ) -> ServiceResult<Response<ReadStream>> {
         let req = request.into_inner();
-        let (tx, rx) = mpsc::channel(128);
+        let (mut tx, rx) = mpsc::channel(128);
         let out = ReceiverStream::new(rx);
-        let mut tasks = Vec::new();
+        let nodes = Arc::clone(&self.data_nodes);
+        let logger = self.log_mgr.clone();
 
-        let blocks = self.name_mgr
+        let mut blocks = self.name_mgr
             .get_blocks(&req.file_name)
-            .await?;
-
-        for block in blocks.into_iter() {
-            let nodes_ref = Arc::clone(&self.data_nodes);
-            let logger_ref = Arc::clone(&self.log_mgr);
-
-            tasks.push(async move {
-                for id in block.node_ids.clone().into_iter() {
-                    let res = nodes_ref
-                        .get_conn(&id)?
-                        .read(
-                            DataReadRequest { 
-                                block_id: block.id.clone() 
-                            }
-                        )
-                        .await;
-
-                    match res {
-                        Ok(data) => {
-                            logger_ref.write(
-                                LogLevel::Info, 
-                                || format!(
-                                    "Read block from data node (block = {}, node = {})", 
-                                    block.id, 
-                                    id
-                                )
-                            );
-
-                            return Ok(data);
-                        }
-                        Err(e) => {
-                            logger_ref.write(
-                                LogLevel::Error, 
-                                || format!(
-                                    "Error reading from data node {}: {}", 
-                                    id, 
-                                    e.message()
-                                )
-                            );
-                        }
-                    }
-                }
-
-                Err(
-                    status_err_reading(
-                        &block.id, 
-                        block.node_ids
-                    )
-                )
-            });
-        }
+            .await?
+            .clone();
+        
+        blocks.shuffle(&mut rand::rng());
 
         tokio::spawn(async move {
-            for task in tasks.drain(..) {
-                match task.await {
-                    Ok(res) => {
-                        let _ = tx.send(
-                            Ok(
-                                NameReadResponse {
-                                    file_name: req.file_name.clone(),
-                                    data: res.data,
+            let mut tasks = Vec::new();
+
+            for block in blocks.into_iter() {
+                let nodes = Arc::clone(&nodes);
+                let logger_clone = logger.clone();
+
+                tasks.push((
+                    req.file_name.clone(),
+                    block.id.clone(),
+                    async move {
+                        for id in block.node_ids.iter() {
+                            let res = nodes
+                                .get_conn(&id)?
+                                .read(
+                                    DataReadRequest { 
+                                        block_id: block.id.clone() 
+                                    }
+                                )
+                                .await;
+
+                            match res {
+                                Ok(data) => {
+                                    logger_clone.write(
+                                        LogLevel::Debug, 
+                                        || format!(
+                                            "Read block from data node (block = {}, node = {})", 
+                                            block.id, 
+                                            id
+                                        )
+                                    );
+
+                                    return Ok(data);
                                 }
-                            )
-                        ).await;
+                                Err(e) => {
+                                    logger_clone.write(
+                                        LogLevel::Error, 
+                                        || format!(
+                                            "Error reading from data node {}: {}", 
+                                            id, 
+                                            e.message()
+                                        )
+                                    );
+                                }
+                            }
+                        }
+
+                        Err(Status::internal(block.id.clone()))
                     }
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
+                ));
+
+                if tasks.len() >= READ_WINDOW {
+                    let err = drain_reads(&logger, &mut tasks, &mut tx)
+                        .await
+                        .is_err();
+
+                    if err {
                         return;
                     }
                 }
             }
+
+            if !tasks.is_empty() {
+                drain_reads(&logger, &mut tasks, &mut tx).await;
+            }
+
+            logger.write(
+                LogLevel::Info, 
+                || format!(
+                    "Finished reading file {} from data nodes", 
+                    req.file_name
+                )
+            );
         });
 
         Ok(
@@ -270,13 +271,11 @@ impl NameNodeService {
                         data_nodes,
                     )
                 ),
-                log_mgr: Arc::new(
-                    LogManager::new(
-                        log_file.unwrap(),
-                        args.log_level,
-                        args.silent,
-                    )?
-                ),
+                log_mgr: LogManager::new(
+                    log_file.unwrap(),
+                    args.log_level,
+                    args.silent,
+                )?,
             }
         )
     }
@@ -337,6 +336,89 @@ impl NameNodeService {
     }
 }
 
+async fn drain_writes<T>(
+    logger: &LogManager,
+    buf: &mut Vec<(String, String, T)>,
+) -> ServiceResult<()>
+    where T: Future<Output = ServiceResult<DataWriteResponse>>
+{
+    let mut err = Vec::new();
+
+    for (block, node, fut) in buf.drain(..) {
+        pin_mut!(fut);
+
+        match fut.await {
+            Ok(res) if res.success => {}
+            _ => {
+                err.push((block, node));
+            }
+        }
+    }
+
+    if !err.is_empty() {
+        let status = status_err_writing(err);
+
+        logger.write(
+            LogLevel::Error, 
+            || status.message().to_string()
+        );
+
+        return Err(status);
+    }
+
+    Ok(())
+}
+
+async fn drain_reads<T>(
+    logger: &LogManager,
+    buf: &mut Vec<(String, String, T)>,
+    tx: &mut Sender<ServiceResult<NameReadResponse>>,
+) -> ServiceResult<()>
+    where T: Future<Output = ServiceResult<DataReadResponse>>
+{
+    for (file, block, fut) in buf.drain(..) {
+        pin_mut!(fut);
+
+        match fut.await {
+            Ok(read) => {
+                let res = tx.send(Ok(
+                    NameReadResponse {
+                        file_name: file.clone(),
+                        data: read.data,
+                    }
+                )).await;
+
+                if res.is_err() {
+                    let status = status_client_disconnect();
+
+                    logger.write(
+                        LogLevel::Error, 
+                        || status.message().to_string()
+                    );
+
+                    return Err(status);
+                }
+            }
+            Err(_) => {
+                let status = status_err_reading(block);
+
+                logger.write(
+                    LogLevel::Error, 
+                    || status.message().to_string()
+                );
+
+                let _ = tx.send(
+                    Err(status.clone())
+                ).await;
+
+                return Err(status);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn status_misconfigured_svc() -> Status {
     Status::internal("Misconfigured Name Node service")
 }
@@ -354,10 +436,12 @@ fn status_err_writing(
 }
 
 fn status_err_reading(
-    block_id: &str,
-    node_ids: Vec<String>,
+    block: String,
 ) -> Status {
-    let nodes_str = node_ids.join(",");
-    let msg = format!("Failed to read block (block = {}) (nodes = {})", block_id, nodes_str);
+    let msg = format!("Failed to read block: {}", block);
     Status::internal(msg)
+}
+
+fn status_client_disconnect() -> Status {
+    Status::internal("Client disconnected")
 }

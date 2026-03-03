@@ -9,4 +9,5 @@
  - stream blocks in order in response
  - daemonize client
  - handle NameNode read/write more memory efficiently
+ - update so logger is not Arc<> ... we can probably just clone this
  
