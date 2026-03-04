@@ -17,11 +17,9 @@ impl DataDirManager {
         let path = Path::new(path_str);
 
         if path.exists() && !path.is_dir() {
-            if !path.is_dir() {
-                return Err(
-                    RustDFSError::err_invalid_data_dir(path_str)
-                );
-            }
+            return Err(
+                RustDFSError::err_invalid_data_dir(path_str)
+            );
         } else {
             fs::create_dir_all(path)
                 .map_err(|e| RustDFSError::err_create_data_dir(path_str, e))?;
