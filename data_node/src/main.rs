@@ -7,13 +7,13 @@ use rustdfs_shared::base::config::RustDFSConfig;
 use service::DataNodeService;
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let config = RustDFSConfig::new()?;
+async fn main() {
+    let config = RustDFSConfig::new().unwrap();
     let args = RustDFSArgs::new();
 
-    DataNodeService::new(args, config)?
+    DataNodeService::new(args, config)
+        .unwrap()
         .serve()
-        .await?;
-
-    Ok(())
+        .await
+        .unwrap();
 }
