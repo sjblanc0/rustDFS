@@ -21,6 +21,10 @@ services:
       - "5001:5001"
     networks:
       - rustdfs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=datanode0:5001"]
+      interval: 5s
+      retries: 20
 
   datanode1:
     build:
@@ -35,6 +39,10 @@ services:
       - "5002:5002"
     networks:
       - rustdfs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=datanode1:5002"]
+      interval: 5s
+      retries: 20
 
   datanode2:
     build:
@@ -49,6 +57,10 @@ services:
       - "5003:5003"
     networks:
       - rustdfs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=datanode2:5003"]
+      interval: 5s
+      retries: 20
 
   # ── name node ───────────────────────────────────────────────────────────────
 
@@ -61,10 +73,17 @@ services:
       - "5000:5000"
     networks:
       - rustdfs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=namenode:5000"]
+      interval: 5s
+      retries: 20
     depends_on:
-      - datanode0
-      - datanode1
-      - datanode2
+      datanode0:
+        condition: service_healthy
+      datanode1:
+        condition: service_healthy
+      datanode2:
+        condition: service_healthy
 
   # ── client ───────────────────────────────────────────────────────────────
 
@@ -75,6 +94,8 @@ services:
     hostname: client
     networks:
       - rustdfs
+    entrypoint: ["/usr/local/bin/client.sh"]
     depends_on:
-      - namenode
+      namenode:
+        condition: service_healthy
     tty: true

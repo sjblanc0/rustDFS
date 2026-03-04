@@ -12,8 +12,16 @@ RUN cargo build --release --bin rustDFS-namenode
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y ca-certificates \
+    && apt-get install -y \
+        ca-certificates \
+        wget \
     && rm -rf /var/lib/apt/lists/*
+
+RUN wget \
+    -qO/usr/local/bin/grpc_health_probe \
+    https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/v0.4.20/grpc_health_probe-linux-amd64
+
+RUN chmod +x /usr/local/bin/grpc_health_probe
 
 RUN mkdir -p /etc/rustdfs /var/log/rustdfs /var/lib/rustdfs
 

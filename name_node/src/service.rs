@@ -13,6 +13,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use tonic::transport::Server;
 use tonic_reflection::server::Builder;
+use tonic_health::server as health_server;
 
 use rustdfs_shared::base::error::RustDFSError;
 use rustdfs_shared::base::logging::{LogManager, LogLevel};
@@ -280,6 +281,7 @@ impl NameNodeService {
     pub async fn serve(
         self,
     ) -> Result<()> {
+        let (health_rep, health_svc) = health_server::health_reporter();
         let addr = self.self_node.to_socket_addr()?;
         let logger = self.log_mgr.clone();
 
@@ -300,7 +302,12 @@ impl NameNodeService {
             )
         );
 
-        Server::builder()
+        health_rep
+            .set_serving::<NameNodeServer<NameNodeService>>()
+            .await;
+
+        let res = Server::builder()
+            .add_service(health_svc)
             .add_service(svc_reflection)
             .add_service(NameNodeServer::new(self))
             .serve(addr)
@@ -309,9 +316,13 @@ impl NameNodeService {
                 let err = RustDFSError::TonicError(e);
                 logger.write_err(&err);
                 err
-            })?;
+            });
+        
+        health_rep
+            .set_not_serving::<NameNodeServer<NameNodeService>>()
+            .await;
 
-        Ok(())
+        res
     }
 
     // randomly selects a primary data node and replica nodes

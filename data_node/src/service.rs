@@ -3,6 +3,7 @@ use futures::future::join_all;
 use tonic::{Request, Response, Status};
 use tonic::transport::Server;
 use tonic_reflection::server::Builder;
+use tonic_health::server as health_server;
 
 use rustdfs_shared::base::error::RustDFSError;
 use rustdfs_shared::base::result::{Result, ServiceResult};
@@ -184,6 +185,7 @@ impl DataNodeService {
     pub async fn serve(
         self,
     ) -> Result<()> {
+        let (health_rep, health_svc) = health_server::health_reporter();
         let addr: std::net::SocketAddr = self.self_node.to_socket_addr()?;
         let logger = self.log_mgr.clone();
 
@@ -204,7 +206,12 @@ impl DataNodeService {
             )
         );
 
-        Server::builder()
+        health_rep
+            .set_serving::<DataNodeServer<DataNodeService>>()
+            .await;
+
+        let res =Server::builder()
+            .add_service(health_svc)
             .add_service(svc_reflection)
             .add_service(DataNodeServer::new(self))
             .serve(addr)
@@ -213,9 +220,13 @@ impl DataNodeService {
                 let err = RustDFSError::TonicError(e);
                 logger.write_err(&err);
                 err
-            })?;
-
-        Ok(())
+            });
+        
+        health_rep
+            .set_not_serving::<DataNodeServer<DataNodeService>>()
+            .await;
+            
+        res
     }
 }
 

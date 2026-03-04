@@ -17,3 +17,5 @@ RUN apt-get update \
 
 COPY --from=builder /build/example/files /root/files
 COPY --from=builder /build/target/release/rustDFS-client /usr/local/bin/rustDFS-client
+COPY --from=builder /build/example/client.sh /usr/local/bin/client.sh
+RUN chmod +x /usr/local/bin/client.sh
