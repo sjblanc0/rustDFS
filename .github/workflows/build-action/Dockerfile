@@ -8,4 +8,4 @@ RUN apt-get update \
 WORKDIR /build
 COPY . .
 
-CMD [ "bash" ]
+ENTRYPOINT ["bash", "-c"]
