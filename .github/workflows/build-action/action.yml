@@ -1,0 +1,12 @@
+name: "build action"
+description: "runs action in rust container"
+inputs:
+  command:
+    description: 'command to run'
+    required: true
+    default: 'default_command'
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  args:
+    - ${{ inputs.command }}
