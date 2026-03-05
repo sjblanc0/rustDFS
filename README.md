@@ -28,7 +28,7 @@ Files are split into 2 MB blocks, distributed across multiple data nodes with co
 3. Blocks are read from data nodes with failover across replicas (randomized order).
 4. Data is streamed back to the client.
 
-## Building
+## Developing
 
 The project is built with the following tools:
 
