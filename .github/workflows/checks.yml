@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: rustfmt
-        uses: ./.github/workflows/container-action
+        uses: ./.github/workflows/build-action
         with:
           command: | 
             rustup component add rustfmt
