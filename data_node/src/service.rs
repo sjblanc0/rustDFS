@@ -157,7 +157,11 @@ impl DataNodeService {
             return Err(err_misconfigured_svc());
         }
 
-        let logger = LogManager::new(log_file.clone().unwrap(), args.log_level, args.silent)?;
+        let logger = LogManager::new(
+            log_file.clone().unwrap(),
+            args.log_level,
+            args.silent,
+        )?;
 
         Ok(DataNodeService {
             id: args.id,

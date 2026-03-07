@@ -31,9 +31,12 @@ use crate::name_mgr::NameManager;
 use crate::proto::NAME_FILE_DESCRIPTOR_SET;
 use crate::proto::name_node_server::NameNode;
 use crate::proto::name_node_server::NameNodeServer;
-use crate::proto::{NameReadRequest, NameReadResponse, NameWriteRequest, NameWriteResponse};
+use crate::proto::{
+    NameReadRequest, NameReadResponse, NameWriteRequest, NameWriteResponse,
+};
 
-type ReadStream = Pin<Box<dyn Stream<Item = ServiceResult<NameReadResponse>> + Send>>;
+type ReadStream =
+    Pin<Box<dyn Stream<Item = ServiceResult<NameReadResponse>> + Send>>;
 
 const WRITE_BUF_SIZE: usize = 8;
 const READ_BUF_SIZE: usize = 8;
@@ -95,11 +98,13 @@ impl NameNode for NameNodeService {
                     writes.push((
                         prim.clone(),
                         block_id.clone(),
-                        self.data_nodes.get_conn(&prim)?.write(DataWriteRequest {
-                            block_id,
-                            data: req.data,
-                            replica_node_ids: repls,
-                        }),
+                        self.data_nodes.get_conn(&prim)?.write(
+                            DataWriteRequest {
+                                block_id,
+                                data: req.data,
+                                replica_node_ids: repls,
+                            },
+                        ),
                     ));
 
                     if writes.len() >= WRITE_BUF_SIZE {
@@ -133,7 +138,10 @@ impl NameNode for NameNodeService {
      *  @param request - NameReadRequest containing file name.
      *  @return Result<Response<ReadStream>> - Response streaming file data or error.
      */
-    async fn read(&self, request: Request<NameReadRequest>) -> ServiceResult<Response<ReadStream>> {
+    async fn read(
+        &self,
+        request: Request<NameReadRequest>,
+    ) -> ServiceResult<Response<ReadStream>> {
         let req = request.into_inner();
         let (mut tx, rx) = mpsc::channel(128);
         let out = ReceiverStream::new(rx);
@@ -164,7 +172,10 @@ impl NameNode for NameNodeService {
                         match res {
                             Ok(data) => {
                                 logger_clone.write(LogLevel::Debug, || {
-                                    format!("Read block {} from data node {}", block.id, id)
+                                    format!(
+                                        "Read block {} from data node {}",
+                                        block.id, id
+                                    )
                                 });
 
                                 return Ok(data);
@@ -179,7 +190,14 @@ impl NameNode for NameNodeService {
                 });
 
                 if tasks.len() >= READ_BUF_SIZE {
-                    match drain_reads(&logger, &req.file_name, &mut tasks, &mut tx).await {
+                    match drain_reads(
+                        &logger,
+                        &req.file_name,
+                        &mut tasks,
+                        &mut tx,
+                    )
+                    .await
+                    {
                         Ok(_) => {}
                         Err(_) => return,
                     }
@@ -187,7 +205,9 @@ impl NameNode for NameNodeService {
             }
 
             if !tasks.is_empty() {
-                match drain_reads(&logger, &req.file_name, &mut tasks, &mut tx).await {
+                match drain_reads(&logger, &req.file_name, &mut tasks, &mut tx)
+                    .await
+                {
                     Ok(_) => {}
                     Err(_) => return,
                 }
@@ -236,14 +256,21 @@ impl NameNodeService {
             );
         }
 
-        let logger = LogManager::new(log_file.clone().unwrap(), args.log_level, args.silent)?;
+        let logger = LogManager::new(
+            log_file.clone().unwrap(),
+            args.log_level,
+            args.silent,
+        )?;
 
         Ok(NameNodeService {
             id: args.id,
             self_node: node.unwrap(),
             replica_ct: config.replica_count,
             name_mgr: NameManager::new(), // TODO: handle init
-            data_nodes: Arc::new(DataNodeManager::new(data_nodes, logger.clone())),
+            data_nodes: Arc::new(DataNodeManager::new(
+                data_nodes,
+                logger.clone(),
+            )),
             log_mgr: logger,
         })
     }
@@ -308,7 +335,8 @@ impl NameNodeService {
 
         let replica_ct = (self.replica_ct as usize).min(keys.len() - 1);
 
-        let (selected, _) = keys.partial_shuffle(&mut rand::rng(), replica_ct + 1);
+        let (selected, _) =
+            keys.partial_shuffle(&mut rand::rng(), replica_ct + 1);
 
         Ok(selected.iter().map(|k| k.to_string()).collect())
     }
@@ -386,7 +414,9 @@ where
                 if res.is_err() {
                     let status = status_client_disconnect();
 
-                    logger.write(LogLevel::Error, || status.message().to_string());
+                    logger.write(LogLevel::Error, || {
+                        status.message().to_string()
+                    });
 
                     return Err(status);
                 }

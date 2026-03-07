@@ -108,7 +108,8 @@ impl RustDFSConfig {
     // Extracts and parses the configuration from the specified file path.
     fn extract_to_config(path: &str) -> Result<Self> {
         let contents: String = Self::extract_to_string(path)?;
-        let res: Self = toml::from_str(&contents).map_err(RustDFSError::TomlError)?;
+        let res: Self =
+            toml::from_str(&contents).map_err(RustDFSError::TomlError)?;
 
         Ok(res)
     }

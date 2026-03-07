@@ -7,7 +7,9 @@ use tonic::transport::{Channel, Endpoint};
 use super::logging::LogManager;
 use super::node::GenericNode;
 use super::proto::data_node_client::DataNodeClient;
-use super::proto::{DataReadRequest, DataReadResponse, DataWriteRequest, DataWriteResponse};
+use super::proto::{
+    DataReadRequest, DataReadResponse, DataWriteRequest, DataWriteResponse,
+};
 use super::result::{Result, ServiceResult};
 
 type Client = DataNodeClient<Channel>;
@@ -56,7 +58,10 @@ impl DataNodeConn {
      *  @param request - DataWriteRequest containing block ID, data, and replica node IDs.
      *  @return ServiceResult<DataWriteResponse> - Response indicating success or failure.
      */
-    pub async fn write(&self, request: DataWriteRequest) -> ServiceResult<DataWriteResponse> {
+    pub async fn write(
+        &self,
+        request: DataWriteRequest,
+    ) -> ServiceResult<DataWriteResponse> {
         self.init_conn().await?;
 
         Ok(self
@@ -78,7 +83,10 @@ impl DataNodeConn {
      *  @param request - DataReadRequest containing block ID.
      *  @return ServiceResult<DataReadResponse> - Response containing the requested data or error.
      */
-    pub async fn read(&self, request: DataReadRequest) -> ServiceResult<DataReadResponse> {
+    pub async fn read(
+        &self,
+        request: DataReadRequest,
+    ) -> ServiceResult<DataReadResponse> {
         self.init_conn().await?;
 
         Ok(self
@@ -107,9 +115,11 @@ impl DataNodeConn {
         }
 
         *write_ref = Some(
-            DataNodeClient::connect(Into::<ServiceResult<Endpoint>>::into(self)?)
-                .await
-                .map_err(|_| status_err_connecting(&self.id))?,
+            DataNodeClient::connect(Into::<ServiceResult<Endpoint>>::into(
+                self,
+            )?)
+            .await
+            .map_err(|_| status_err_connecting(&self.id))?,
         );
 
         Ok(())
@@ -120,11 +130,12 @@ impl DataNodeConn {
 
 impl From<&DataNodeConn> for ServiceResult<Endpoint> {
     fn from(node: &DataNodeConn) -> Self {
-        let socket_addr =
-            Into::<Result<SocketAddr>>::into(node).map_err(|_| status_invalid_addr(&node.id))?;
+        let socket_addr = Into::<Result<SocketAddr>>::into(node)
+            .map_err(|_| status_invalid_addr(&node.id))?;
         let endpoint = format!("http://{}", socket_addr);
 
-        Endpoint::from_shared(endpoint).map_err(|_| status_invalid_addr(&node.id))
+        Endpoint::from_shared(endpoint)
+            .map_err(|_| status_invalid_addr(&node.id))
     }
 }
 
@@ -158,7 +169,10 @@ impl DataNodeManager {
      *  @param log_mgr - LogManager for logging operations.
      *  @return DataNodeManager - Initialized data node manager.
      */
-    pub fn new(connections: HashMap<String, DataNodeConn>, log_mgr: LogManager) -> Self {
+    pub fn new(
+        connections: HashMap<String, DataNodeConn>,
+        log_mgr: LogManager,
+    ) -> Self {
         DataNodeManager {
             connections,
             log_mgr,

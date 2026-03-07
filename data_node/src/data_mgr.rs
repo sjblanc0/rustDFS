@@ -54,7 +54,11 @@ impl DataDirManager {
      *  @param data - Byte slice containing the data to write.
      *  @return ServiceResult<()> - Result indicating success or failure.
      */
-    pub fn write_block(&self, block_id: &str, data: &[u8]) -> ServiceResult<()> {
+    pub fn write_block(
+        &self,
+        block_id: &str,
+        data: &[u8],
+    ) -> ServiceResult<()> {
         let block_path = format!("{}/{}", self.path, block_id);
 
         let mut file = OpenOptions::new()
