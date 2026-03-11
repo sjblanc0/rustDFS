@@ -26,10 +26,7 @@ impl BlockManager {
      *  @param log_mgr - LogManager for logging operations.
      *  @return ServiceResult<BlockManager> - Initialized BlockManager instance or error.
      */
-    pub fn new(
-        path_str: &str, 
-        log_mgr: &LogManager
-    ) -> Result<Self> {
+    pub fn new(path_str: &str, log_mgr: &LogManager) -> Result<Self> {
         let path = Path::new(path_str);
 
         if path.exists() && !path.is_dir() {

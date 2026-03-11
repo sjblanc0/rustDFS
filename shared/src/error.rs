@@ -1,8 +1,8 @@
 use std::fmt::{Display, Formatter, Result};
 use std::io::Error as IoError;
 use toml::de::Error as TomlError;
-use tonic::transport::Error as TonicError;
 use tonic::Status;
+use tonic::transport::Error as TonicError;
 
 /**
  * Custom error type for RustDFS.

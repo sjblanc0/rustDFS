@@ -2,8 +2,8 @@ mod args;
 mod files;
 mod service;
 
-use rustdfs_shared::config::RustDFSConfig;
 use args::RustDFSArgs;
+use rustdfs_shared::config::RustDFSConfig;
 use service::NameNodeService;
 
 #[tokio::main]

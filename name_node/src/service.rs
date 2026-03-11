@@ -2,9 +2,7 @@ use futures::Future;
 use futures::pin_mut;
 use mpsc::Sender;
 use rand::seq::SliceRandom;
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::pin::Pin;
-use std::io::Error as IoError;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
@@ -14,17 +12,19 @@ use tonic_health::server as health_server;
 use tonic_reflection::server::Builder;
 use uuid::Uuid;
 
-use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::config::RustDFSConfig;
-use rustdfs_shared::conn::{DataNodeConn, DataNodeManager};
+use rustdfs_shared::conn::DataNodeManager;
 use rustdfs_shared::error::RustDFSError;
+use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
 use rustdfs_shared::proto::FILE_DESCRIPTOR_SET;
-use rustdfs_shared::proto::{DataReadRequest, DataReadResponse, DataWriteRequest};
 use rustdfs_shared::proto::data_write_request::ReplicaNode;
 use rustdfs_shared::proto::name_node_server::NameNode;
 use rustdfs_shared::proto::name_node_server::NameNodeServer;
-use rustdfs_shared::proto::{NameReadRequest, NameReadResponse, NameWriteRequest, NameWriteResponse, NameRegisterRequest};
+use rustdfs_shared::proto::{DataReadRequest, DataReadResponse, DataWriteRequest};
+use rustdfs_shared::proto::{
+    NameReadRequest, NameReadResponse, NameRegisterRequest, NameWriteRequest, NameWriteResponse,
+};
 use rustdfs_shared::result::{Result, ServiceResult};
 
 use crate::args::RustDFSArgs;
@@ -41,7 +41,7 @@ const READ_BUF_SIZE: usize = 8;
  *
  * Handles file metadata management, including mapping files to
  * data blocks and their locations.
- * 
+ *
  *  @field host - HostAddr of the name node.
  *  @field replica_ct - Number of replicas for each data block.
  *  @field name_mgr - FileManager for managing file metadata.
@@ -96,10 +96,8 @@ impl NameNode for NameNodeService {
                     writes.push((
                         format!("{}:{}", nodes[0].hostname, nodes[0].port),
                         block_id.clone(),
-                        self.data_nodes
-                            .get_conn(&nodes[0].hostname)
-                            .await?
-                            .write(DataWriteRequest {
+                        self.data_nodes.get_conn(&nodes[0].hostname).await?.write(
+                            DataWriteRequest {
                                 block_id,
                                 data: req.data,
                                 replicas: nodes[1..]
@@ -109,7 +107,8 @@ impl NameNode for NameNodeService {
                                         port: h.port as u32,
                                     })
                                     .collect(),
-                            }),
+                            },
+                        ),
                     ));
 
                     if writes.len() >= WRITE_BUF_SIZE {
@@ -143,19 +142,14 @@ impl NameNode for NameNodeService {
      *  @param request - NameReadRequest containing file name.
      *  @return Result<Response<ReadStream>> - Response streaming file data or error.
      */
-    async fn read(
-        &self, 
-        request: Request<NameReadRequest>,
-    ) -> ServiceResult<Response<ReadStream>> {
+    async fn read(&self, request: Request<NameReadRequest>) -> ServiceResult<Response<ReadStream>> {
         let req = request.into_inner();
         let (mut tx, rx) = mpsc::channel(128);
         let out = ReceiverStream::new(rx);
         let logger = self.log_mgr.clone();
         let mut conns = Vec::new();
 
-        let blocks = self.name_mgr
-            .get_blocks(&req.file_name)
-            .await?;
+        let blocks = self.name_mgr.get_blocks(&req.file_name).await?;
 
         for block in &blocks {
             let mut vec = Vec::new();
@@ -170,7 +164,7 @@ impl NameNode for NameNodeService {
 
         tokio::spawn(async move {
             let mut tasks = Vec::new();
-            let iter = blocks.into_iter().zip(conns.into_iter());
+            let iter = blocks.into_iter().zip(conns);
 
             for (block, conns) in iter {
                 let logger_clone = logger.clone();
@@ -189,12 +183,12 @@ impl NameNode for NameNodeService {
 
                         match res {
                             Ok(data) => {
-                                logger_clone.write(LogLevel::Debug, || format!(
-                                    "Read block {} from data node at {}:{}", 
-                                    block.id, 
-                                    host.hostname, 
-                                    host.port
-                                ));
+                                logger_clone.write(LogLevel::Debug, || {
+                                    format!(
+                                        "Read block {} from data node at {}:{}",
+                                        block.id, host.hostname, host.port
+                                    )
+                                });
                                 return Ok(data);
                             }
                             Err(e) => {
@@ -236,15 +230,10 @@ impl NameNode for NameNodeService {
      *  @param request - NameRegisterRequest containing data node host and port.
      *  @return Result<Response<()>> - Response indicating success or failure.
      */
-    async fn register(
-        &self,
-        request: Request<NameRegisterRequest>,
-    ) -> ServiceResult<Response<()>> {
+    async fn register(&self, request: Request<NameRegisterRequest>) -> ServiceResult<Response<()>> {
         let req = request.into_inner();
 
-        self.data_nodes
-            .add_conn(&req.host, req.port as u16)
-            .await?;
+        self.data_nodes.add_conn(&req.host, req.port as u16).await?;
 
         self.log_mgr.write(LogLevel::Info, || {
             format!("Registered data node at {}:{}", req.host, req.port)
@@ -262,15 +251,8 @@ impl NameNodeService {
      *  @param config - Configuration for the RustDFS cluster.
      *  @return Result<NameNodeService> - Initialized NameNodeService instance or error.
      */
-    pub fn new(
-        args: RustDFSArgs, 
-        config: RustDFSConfig,
-    ) -> Result<Self> {
-        let logger = LogManager::new(
-            config.name_node.log_file, 
-            args.log_level, 
-            args.silent
-        )?;
+    pub fn new(args: RustDFSArgs, config: RustDFSConfig) -> Result<Self> {
+        let logger = LogManager::new(config.name_node.log_file, args.log_level, args.silent)?;
 
         Ok(NameNodeService {
             host: HostAddr {
@@ -305,8 +287,7 @@ impl NameNodeService {
         logger.write(LogLevel::Info, || {
             format!(
                 "Starting NameNodeServer at {}:{}",
-                self.host.hostname,
-                self.host.port
+                self.host.hostname, self.host.port
             )
         });
 
@@ -344,16 +325,9 @@ impl NameNodeService {
             return Err(err);
         }
 
-        let (selected, _) = keys.partial_shuffle(
-            &mut rand::rng(), 
-            self.replica_ct + 1,
-        );
+        let (selected, _) = keys.partial_shuffle(&mut rand::rng(), self.replica_ct + 1);
 
-        Ok(
-            selected.iter()
-                .map(|v| v.clone())
-                .collect()
-        )
+        Ok(selected.to_vec())
     }
 }
 
@@ -443,10 +417,7 @@ where
 
 // Error helpers
 
-fn status_not_enough_nodes(
-    node_ct: usize,
-    replica_ct: usize,
-) -> Status {
+fn status_not_enough_nodes(node_ct: usize, replica_ct: usize) -> Status {
     let msg = format!(
         "Not enough data nodes for write: available {}, required {}",
         node_ct,

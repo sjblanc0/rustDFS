@@ -1,10 +1,10 @@
 use chrono::Local;
 use clap::ValueEnum;
 use mpsc::Sender;
-use std::thread;
 use std::fs::{self, write};
 use std::path::Path;
 use std::sync::mpsc;
+use std::thread;
 use tonic::Status;
 
 use super::error::RustDFSError;
@@ -42,11 +42,11 @@ pub enum LogLevel {
 
 impl LogManager {
     /**
-     * Creates a new LogManager instance. Ensures the log file's parent 
+     * Creates a new LogManager instance. Ensures the log file's parent
      * directory exists. Spawns dedicated thread to handle logfile writing.
      *  
-     * It's important that only one instance is created to avoid write 
-     * conflicts / spawning unnecessary threads. Instead rely on 
+     * It's important that only one instance is created to avoid write
+     * conflicts / spawning unnecessary threads. Instead rely on
      * cloning a shared instance.
      *
      *  @param fp - Path to the log file.
@@ -54,15 +54,10 @@ impl LogManager {
      *  @param silent - If true, suppresses console output.
      *  @return Result<LogManager> - Initialized LogManager instance or error.
      */
-    pub fn new(
-        fp: String,
-        level: LogLevel, 
-        silent: bool
-    ) -> Result<Self> {
+    pub fn new(fp: String, level: LogLevel, silent: bool) -> Result<Self> {
         let (tx, rx) = mpsc::channel::<String>();
         let path = Path::new(&fp);
-        let parent = path.parent()
-            .unwrap_or(Path::new(""));
+        let parent = path.parent().unwrap_or(Path::new(""));
 
         if !parent.as_os_str().is_empty() && !parent.is_dir() {
             fs::create_dir_all(parent).map_err(RustDFSError::IoError)?;
@@ -73,7 +68,7 @@ impl LogManager {
                 match rx.recv() {
                     Ok(msg) => {
                         let _ = write(&fp, msg);
-                    },
+                    }
                     Err(_) => break,
                 }
             }
@@ -81,8 +76,8 @@ impl LogManager {
 
         Ok(LogManager {
             channel: tx,
-            level: level,
-            silent: silent,
+            level,
+            silent,
         })
     }
 

@@ -1,17 +1,13 @@
 use std::collections::HashMap;
-use std::net::{SocketAddr, ToSocketAddrs};
-use std::io::Error as IoError;
 use tokio::sync::RwLock;
-use std::fmt::Display;
 use tonic::Status;
-use tonic::transport::{Channel, Endpoint, Error as TonicError};
+use tonic::transport::Channel;
 
 use crate::host::HostAddr;
 use crate::logging::{LogLevel, LogManager};
 use crate::proto::data_node_client::DataNodeClient;
 use crate::proto::{DataReadRequest, DataReadResponse, DataWriteRequest};
-use crate::result::{Result, ServiceResult};
-
+use crate::result::ServiceResult;
 
 /**
  * Manages data node connections for RustDFS.
@@ -49,9 +45,7 @@ impl DataNodeManager {
      *  @param log_mgr - [LogManager] for logging operations.
      *  @return DataNodeManager - Initialized data node manager.
      */
-    pub fn new(
-        log_mgr: &LogManager
-    ) -> Self {
+    pub fn new(log_mgr: &LogManager) -> Self {
         DataNodeManager {
             connections: RwLock::new(HashMap::new()),
             log_mgr: log_mgr.clone(),
@@ -65,34 +59,28 @@ impl DataNodeManager {
      *  @param port - Port number of the data node.
      *  @return ServiceResult<()> - Result indicating success or failure.
      */
-    pub async fn add_conn(
-        &self, 
-        host: &str,
-        port: u16,
-    ) -> ServiceResult<()> {
-        let hostaddr = HostAddr { hostname: host.to_string(), port };
+    pub async fn add_conn(&self, host: &str, port: u16) -> ServiceResult<()> {
+        let hostaddr = HostAddr {
+            hostname: host.to_string(),
+            port,
+        };
         let endpoint = hostaddr.to_endpoint_serving(&self.log_mgr)?;
 
         self.log_mgr.write(LogLevel::Info, || {
             format!("Connecting to data node at {}:{}", host, port)
         });
 
-        self.connections
-            .write()
-            .await
-            .insert(
-                host.to_string(),
-                DataNodeConn {
-                    host: hostaddr,
-                    client: DataNodeClient::connect(endpoint)
-                        .await
-                        .map_err(|_| {
-                            let err = status_err_connecting(host, port);
-                            self.log_mgr.write_status(&err);
-                            err
-                        })?,
-                },
-            );
+        self.connections.write().await.insert(
+            host.to_string(),
+            DataNodeConn {
+                host: hostaddr,
+                client: DataNodeClient::connect(endpoint).await.map_err(|_| {
+                    let err = status_err_connecting(host, port);
+                    self.log_mgr.write_status(&err);
+                    err
+                })?,
+            },
+        );
 
         Ok(())
     }
@@ -117,10 +105,7 @@ impl DataNodeManager {
      *  @param host - The host of the data node.
      *  @return ServiceResult<&DataNodeConn> - Result containing a reference to [DataNodeConn] or an error.
      */
-    pub async fn get_conn(
-        &self, 
-        host: &str
-    ) -> ServiceResult<DataNodeConn> {
+    pub async fn get_conn(&self, host: &str) -> ServiceResult<DataNodeConn> {
         self.connections
             .read()
             .await
@@ -139,14 +124,8 @@ impl DataNodeManager {
      *  @param host - The host of the data node.
      *  @return bool - True if the connection exists, false otherwise.
      */
-    pub async fn has_conn(
-        &self, 
-        host: &str
-    ) -> bool {
-        self.connections
-            .read()
-            .await
-            .contains_key(host)
+    pub async fn has_conn(&self, host: &str) -> bool {
+        self.connections.read().await.contains_key(host)
     }
 }
 
@@ -157,14 +136,8 @@ impl DataNodeConn {
      *  @param request - DataWriteRequest containing block ID, data, and replica node IDs.
      *  @return ServiceResult<()> - Result indicating success or failure.
      */
-    pub async fn write(
-        self,
-        request: DataWriteRequest,
-    ) -> ServiceResult<()> {
-        self.client
-            .clone()
-            .write(request)
-            .await?;
+    pub async fn write(self, request: DataWriteRequest) -> ServiceResult<()> {
+        self.client.clone().write(request).await?;
 
         Ok(())
     }
@@ -175,14 +148,8 @@ impl DataNodeConn {
      *  @param request - DataReadRequest containing block ID.
      *  @return ServiceResult<DataReadResponse> - Result containing the read data or an error.
      */
-    pub async fn read(
-        self,
-        request: DataReadRequest,
-    ) -> ServiceResult<DataReadResponse> {
-        let response = self.client
-            .clone()
-            .read(request)
-            .await?;
+    pub async fn read(self, request: DataReadRequest) -> ServiceResult<DataReadResponse> {
+        let response = self.client.clone().read(request).await?;
 
         Ok(response.into_inner())
     }
