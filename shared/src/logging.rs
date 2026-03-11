@@ -64,13 +64,8 @@ impl LogManager {
         }
 
         thread::spawn(move || {
-            loop {
-                match rx.recv() {
-                    Ok(msg) => {
-                        let _ = write(&fp, msg);
-                    }
-                    Err(_) => break,
-                }
+            while let Ok(msg)  = rx.recv() {
+                let _ = write(&fp, msg);
             }
         });
 
