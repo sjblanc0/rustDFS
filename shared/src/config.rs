@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use toml;
@@ -9,30 +8,26 @@ use super::result::Result;
 
 const CONFIG_FILE_GLOBAL: &str = "/etc/rustdfs/rdfsconf.toml";
 const LOG_FILE_GLOBAL: &str = "/var/log/rustdfs";
-const NAME_FILE_GLOBAL: &str = "/var/lib/rustdfs/data";
 const DATA_DIR_GLOBAL: &str = "/var/lib/rustdfs/data";
 
 /**
  * Configuration structure for RustDFS. Corresponds to TOML config file.
  *
  *  @field replica_count - Number of replicas for each data block.
- *  @field name_nodes - Mapping of name node IDs to their configurations.
- *  @field data_nodes - Mapping of data node IDs to their configurations.
+ *  @field name_node - Config for name node. Identifies location on network.
+ *  @field data_node - Shared config for data nodes.
  *
  * Sample TOML structure:
  *
  * ```toml
  *  replica-count = 0
  *
- *  [name-node.nn1]
+ *  [name-node]
  *  host = namenode1
  *  port = 50051
- *  name-file = "/path/to/namefile"
  *  log-file = "/path/to/logfile"
  *
- *  [data-node.dn1]
- *  host = datanode1
- *  port = 50052
+ *  [data-node]
  *  data-dir = "/path/to/datadir"
  *  log-file = "/path/to/logfile"
  * ```
@@ -43,10 +38,10 @@ pub struct RustDFSConfig {
     pub replica_count: u32,
 
     #[serde(rename = "name-node")]
-    pub name_nodes: HashMap<String, NameNodeConfig>,
+    pub name_node: NameNodeConfig,
 
     #[serde(rename = "data-node")]
-    pub data_nodes: HashMap<String, DataNodeConfig>,
+    pub data_node: DataNodeConfig,
 }
 
 /**
@@ -54,7 +49,6 @@ pub struct RustDFSConfig {
  *
  *  @field host - Hostname or IP address of the name node.
  *  @field port - Port number for the name node service.
- *  @field name_file - Path to the name file for persistence.
  *  @field log_file - Path to the log file for logging.
  */
 #[derive(Deserialize)]
@@ -65,9 +59,6 @@ pub struct NameNodeConfig {
     #[serde(rename = "port")]
     pub port: u16,
 
-    #[serde(rename = "name-file", default = "default_name_file")]
-    pub name_file: String,
-
     #[serde(rename = "log-file", default = "default_log_file")]
     pub log_file: String,
 }
@@ -75,19 +66,11 @@ pub struct NameNodeConfig {
 /**
  * Configuration for a Data Node.
  *
- *  @field host - Hostname or IP address of the data node.
- *  @field port - Port number for the data node service.
  *  @field data_dir - Directory path for storing data blocks.
  *  @field log_file - Path to the log file for logging.
  */
 #[derive(Deserialize)]
 pub struct DataNodeConfig {
-    #[serde(rename = "host")]
-    pub host: String,
-
-    #[serde(rename = "port")]
-    pub port: u16,
-
     #[serde(rename = "data-dir", default = "default_data_dir")]
     pub data_dir: String,
 
@@ -130,10 +113,6 @@ impl RustDFSConfig {
 
 fn default_log_file() -> String {
     LOG_FILE_GLOBAL.to_string()
-}
-
-fn default_name_file() -> String {
-    NAME_FILE_GLOBAL.to_string()
 }
 
 fn default_data_dir() -> String {

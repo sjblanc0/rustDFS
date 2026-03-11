@@ -1,38 +1,50 @@
-use futures::future::join_all;
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use tonic::transport::Server;
+use futures::future::{join_all, TryFutureExt};
+use futures::join;
+use tonic_health::pb::health_server::Health;
+use std::io::Error as IoError;
+use std::fmt::Display;
+use std::net::{SocketAddr, ToSocketAddrs};
+use tonic::transport::{Server, Endpoint, Error as TonicError};
 use tonic::{Request, Response, Status};
-use tonic_health::server as health_server;
+use tonic_health::server::{self as health_server, HealthReporter};
 use tonic_reflection::server::Builder;
+use tokio_retry2::{Retry, RetryError};
+use tokio_retry2::strategy::{ExponentialBackoff, MaxInterval, jitter};
 
-use rustdfs_shared::args::RustDFSArgs;
+use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::config::RustDFSConfig;
-use rustdfs_shared::data_conn::{DataNodeConn, DataNodeManager};
+use rustdfs_shared::conn::{DataNodeConn, DataNodeManager};
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::logging::{LogLevel, LogManager};
-use rustdfs_shared::node::GenericNode;
-use rustdfs_shared::proto::DATA_FILE_DESCRIPTOR_SET;
+use rustdfs_shared::proto::{FILE_DESCRIPTOR_SET, NameRegisterRequest};
+use rustdfs_shared::proto::name_node_client::NameNodeClient;
 use rustdfs_shared::proto::data_node_server::{DataNode, DataNodeServer};
-use rustdfs_shared::proto::{
-    DataReadRequest, DataReadResponse, DataWriteRequest, DataWriteResponse,
-};
+use rustdfs_shared::proto::{DataReadRequest, DataReadResponse, DataWriteRequest};
 use rustdfs_shared::result::{Result, ServiceResult};
 
-use crate::data_mgr::DataDirManager;
+use crate::blocks::BlockManager;
+use crate::args::RustDFSArgs;
+
+type RetryResult<T> = std::result::Result<T, RetryError<RustDFSError>>;
 
 /**
  * Data Node service implementation for RustDFS.
  *
  * Handles read and write requests for data blocks,
  * and manages replication to other data nodes.
+ * 
+ *  @field host - HostAddr of the data node.
+ *  @field name_host - HostAddr of the name node.
+ *  @field data_nodes - DataNodeManager for managing data node connections.
+ *  @field data_mgr - BlockManager for managing data blocks on local filesystem.
+ *  @field log_mgr - LogManager for logging operations.
  */
 #[derive(Debug)]
 pub struct DataNodeService {
-    id: String,
-    self_node: GenericNode,
+    host: HostAddr,
+    name_host: HostAddr,
     data_nodes: DataNodeManager,
-    data_mgr: DataDirManager,
+    data_mgr: BlockManager,
     log_mgr: LogManager,
 }
 
@@ -41,41 +53,49 @@ impl DataNode for DataNodeService {
     /**
      * Writes a block of data to the data node.
      * Also replicates the block to other data nodes as specified.
+     * Stores connections to new replica nodes in [DataNodeManager].
      *
      *  @param request - DataWriteRequest containing block ID, data, and replica node IDs.
-     *  @return Result<Response<DataWriteResponse>> - Response indicating success or failure.
+     *  @return Result<Response<()>> - Response indicating success or failure.
      */
     async fn write(
         &self,
         request: Request<DataWriteRequest>,
-    ) -> ServiceResult<Response<DataWriteResponse>> {
+    ) -> ServiceResult<Response<()>> {
         let request_ref = request.get_ref();
         let mut repls = Vec::new();
-        let mut ids = Vec::new();
+        let mut idents = Vec::new();
 
         self.data_mgr
             .write_block(&request_ref.block_id, &request_ref.data)?;
 
-        for id in request_ref.replica_node_ids.iter() {
-            if id == &self.id {
-                continue;
+        for desc in request_ref.replicas.iter() {
+            if !self.data_nodes.has_conn(&desc.host).await {
+                self.data_nodes
+                    .add_conn(&desc.host, desc.port as u16)
+                    .await?;
             }
 
-            ids.push(id.clone());
+            let ident = format!("{}:{}", desc.host, desc.port);
+            let write = self.data_nodes
+                .get_conn(&desc.host)
+                .await?
+                .write(DataWriteRequest {
+                    block_id: request_ref.block_id.clone(),
+                    data: request_ref.data.clone(),
+                    replicas: vec![],
+                });
 
-            repls.push(self.data_nodes.get_conn(id)?.write(DataWriteRequest {
-                block_id: request_ref.block_id.clone(),
-                data: request_ref.data.clone(),
-                replica_node_ids: vec![],
-            }));
+            idents.push(ident);
+            repls.push(write);
         }
 
         let failed = join_all(repls)
             .await
             .into_iter()
             .enumerate()
-            .filter(|(_, r)| r.is_err() || !r.as_ref().unwrap().success)
-            .map(|(i, _)| ids[i].clone())
+            .filter(|(_, r)| r.is_err())
+            .map(|(i, _)| idents[i].clone())
             .collect::<Vec<_>>();
 
         if !failed.is_empty() {
@@ -92,7 +112,7 @@ impl DataNode for DataNodeService {
             )
         });
 
-        Ok(Response::new(DataWriteResponse { success: true }))
+        Ok(Response::new(()))
     }
 
     /**
@@ -130,40 +150,32 @@ impl DataNodeService {
      *  @param config - Configuration for the RustDFS cluster.
      *  @return Result<DataNodeService> - Initialized DataNodeService instance or error.
      */
-    pub fn new(args: RustDFSArgs, config: RustDFSConfig) -> Result<Self> {
-        let mut data_dir = None;
-        let mut data_nodes = HashMap::new();
-        let mut log_file = None;
-        let mut node = None;
-
-        for (k, dn_config) in config.data_nodes {
-            if args.id == k {
-                node = Some(GenericNode {
-                    host: dn_config.host,
-                    port: dn_config.port,
-                });
-                data_dir = Some(dn_config.data_dir);
-                log_file = Some(dn_config.log_file);
-                continue;
-            }
-
-            data_nodes.insert(
-                k.clone(),
-                DataNodeConn::new(k.clone(), dn_config.host, dn_config.port),
-            );
-        }
-
-        if node.is_none() || data_dir.is_none() || log_file.is_none() {
-            return Err(err_misconfigured_svc());
-        }
-
-        let logger = LogManager::new(log_file.clone().unwrap(), args.log_level, args.silent)?;
+    pub fn new(
+        args: RustDFSArgs, 
+        config: RustDFSConfig,
+    ) -> Result<Self> {
+        let logger = LogManager::new(
+            config.data_node.log_file, 
+            args.log_level, 
+            args.silent
+        )?;
 
         Ok(DataNodeService {
-            id: args.id,
-            self_node: node.unwrap(),
-            data_nodes: DataNodeManager::new(data_nodes, logger.clone()),
-            data_mgr: DataDirManager::new(&data_dir.unwrap(), logger.clone())?,
+            host: HostAddr {
+                hostname: hostname(&logger)?,
+                port: args.port,
+            },
+            name_host: HostAddr {
+                hostname: config.name_node.host.clone(),
+                port: config.name_node.port,
+            },
+            data_nodes: DataNodeManager::new(
+                &logger
+            ),
+            data_mgr: BlockManager::new(
+                &config.data_node.data_dir,
+                &logger
+            )?,
             log_mgr: logger,
         })
     }
@@ -176,47 +188,151 @@ impl DataNodeService {
      */
     pub async fn serve(self) -> Result<()> {
         let (health_rep, health_svc) = health_server::health_reporter();
-        let addr = Into::<Result<SocketAddr>>::into(&self.self_node)?;
+        let addr = self.host.to_socket_addr(&self.log_mgr)?;
         let logger = self.log_mgr.clone();
 
         // should remove this or make it optional via config
         // only added this for testing
         let svc_reflection = Builder::configure()
-            .register_encoded_file_descriptor_set(DATA_FILE_DESCRIPTOR_SET)
+            .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
             .build_v1()
             .unwrap();
 
         logger.write(LogLevel::Info, || {
             format!(
-                "Starting DataNodeServer with ID {} at {} on port {}",
-                self.id,
-                addr.ip(),
-                addr.port()
+                "Starting DataNodeServer at {}:{}",
+                self.host.hostname,
+                self.host.port,
             )
         });
+
+        let host = self.host.clone();
+        let name_host = self.name_host.clone();
+        let retry_strat = ExponentialBackoff::from_millis(100)
+            .factor(1)
+            .max_delay_millis(1000)
+            .max_interval(10000)
+            .map(jitter);
 
         health_rep
             .set_serving::<DataNodeServer<DataNodeService>>()
             .await;
 
-        let res = Server::builder()
-            .add_service(health_svc)
-            .add_service(svc_reflection)
-            .add_service(DataNodeServer::new(self))
-            .serve(addr)
-            .await
-            .map_err(|e| {
-                let err = RustDFSError::TonicError(e);
-                logger.write_err(&err);
-                err
-            });
+        let res = join!(
+            Server::builder()
+                .add_service(health_svc)
+                .add_service(svc_reflection)
+                .add_service(DataNodeServer::new(self))
+                .serve(addr)
+                .map_err(|e| {
+                    let err = RustDFSError::TonicError(e);
+                    logger.write_err(&err);
+                    err
+                }),
+            Retry::spawn(
+                retry_strat, 
+                || init_name_conn(
+                    logger.clone(),
+                    health_rep.clone(),
+                    host.clone(),
+                    name_host.clone(),
+                )
+            ),
+        );
 
         health_rep
             .set_not_serving::<DataNodeServer<DataNodeService>>()
             .await;
 
-        res
+        res.0?;
+        res.1?;
+        Ok(())
     }
+}
+
+/**
+ * Initializes connection to the Name Node and registers this Data Node.
+ *
+ *  @param logger - LogManager for logging.
+ *  @param health_rep - HealthReporter for service health status.
+ *  @param host - HostAddr of this Data Node.
+ *  @param name_host - HostAddr of the Name Node.
+ *  @return RetryResult<()> - Result indicating success or transient error for retrying.
+ */
+async fn init_name_conn(
+    logger: LogManager,
+    health_rep: HealthReporter,
+    host: HostAddr,
+    name_host: HostAddr,
+) -> RetryResult<()> {
+    let endpoint = name_host.to_endpoint(&logger)?;
+    let client = NameNodeClient::connect(endpoint)
+        .await;
+
+    if client.is_err() {
+        let orig = client.err().unwrap();
+        let err = RustDFSError::TonicError(orig);
+
+        logger.write_err(&err);
+        logger.write(LogLevel::Error, || {
+            format!(
+                "Failed to connect to NameNode at {}:{}. Retrying...",
+                name_host.hostname,
+                name_host.port
+            )
+        });
+
+        return RetryError::to_transient(err);
+    }
+
+    let res = client
+        .unwrap()
+        .register(
+            NameRegisterRequest {
+                host: host.hostname.clone(),
+                port: host.port as u32,
+            }
+        ).await;
+
+    if res.is_err() {
+        let orig = res.err().unwrap();
+        let err = RustDFSError::TonicStatusError(orig);
+
+        logger.write_err(&err);
+        logger.write(LogLevel::Error, || {
+            format!(
+                "Failed to register with NameNode at {}:{}. Retrying...",
+                name_host.hostname,
+                name_host.port
+            )
+        });
+
+        return RetryError::to_transient(err);
+    }
+
+    health_rep
+        .set_serving::<DataNodeServer<DataNodeService>>()
+        .await;
+
+    Ok(())
+}
+
+// Retrieves the hostname of the current machine.
+fn hostname(
+    logger: &LogManager,
+) -> Result<String> {
+    hostname::get()
+        .map_err(|e| {
+            let err = err_resolving_host(Some(e));
+            logger.write_err(&err);
+            err
+        })?
+        .into_string()
+        .map_err(|_| {
+            let err = err_resolving_host(None);
+            logger.write_err(&err);
+            err
+        })
 }
 
 // Format bytes into human-readable string
@@ -234,14 +350,23 @@ fn format_bytes(bytes: usize) -> String {
     }
 }
 
-// Helper functions for error statuses
+// Error status helpers
 
-fn err_misconfigured_svc() -> RustDFSError {
-    RustDFSError::CustomError("Misconfigured Data Node service".to_string())
+fn err_resolving_host(err: Option<IoError>) -> RustDFSError {
+    match err {
+        Some(e) => {
+            let str = format!("Error resolving host: {}", e);
+            RustDFSError::CustomError(str)
+        },
+        None => {
+            let str = format!("Error resolving host");
+            RustDFSError::CustomError(str)
+        },
+    }
 }
 
 fn status_err_forwarding(nodes: &[String]) -> Status {
     let ids_str = nodes.join(",");
-    let log = format!("Error forwarding to data nodes: {}", ids_str);
+    let log = format!("Error forwarding to data nodes at {}", ids_str);
     Status::internal(log)
 }

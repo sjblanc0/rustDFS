@@ -2,9 +2,11 @@
 name = "rustdfs-namenode"
 version = "0.0.0"
 edition = "2024"
+rust-version = "1.92.0"
 
 [dependencies]
 rustdfs-shared = { path = "../shared", version = "0.0.0" }
+clap = { version = "4.5.59", features = ["derive"] }
 futures = "0.3.31"
 uuid = { version = "1.21.0", features = ["v4", "fast-rng"] }
 rand = "0.9"

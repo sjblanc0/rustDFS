@@ -1,9 +1,10 @@
-mod data_mgr;
+mod args;
+mod blocks;
 mod service;
 
-use rustdfs_shared::args::RustDFSArgs;
 use rustdfs_shared::config::RustDFSConfig;
 use service::DataNodeService;
+use args::RustDFSArgs;
 
 #[tokio::main]
 async fn main() {

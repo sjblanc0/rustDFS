@@ -14,20 +14,11 @@ RUN apt-get update && \
         gcc \
         gcc-multilib \
         protobuf-compiler \
-        libprotobuf-dev \
-        git \
-        golang-go
+        libprotobuf-dev
 
 # install rust and set specific version
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup install 1.89
-RUN rustup default 1.89
+RUN rustup install 1.92.0
+RUN rustup default 1.92.0
 ENV RUST_BACKTRACE=1
-
-# install grpcurl (runs test grpc calls)
-RUN go install github.com/fullstorydev/grpcurl/cmd/grpcurl@v1.9.3
-
-# setup rustDFS config
-RUN mkdir -p /etc/rustdfs
-COPY .env/rdfsconf.toml /etc/rustdfs/rdfsconf.toml

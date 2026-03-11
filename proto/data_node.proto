@@ -2,19 +2,22 @@ syntax = "proto3";
 
 package data_node;
 
+import "google/protobuf/empty.proto";
+
 service DataNode {
-    rpc Write (DataWriteRequest) returns (DataWriteResponse);
+    rpc Write (DataWriteRequest) returns (google.protobuf.Empty);
     rpc Read (DataReadRequest) returns (DataReadResponse);
 }
 
 message DataWriteRequest {
     string blockID = 1;
     bytes data = 2;
-    repeated string replicaNodeIds = 3;
-}
+    repeated ReplicaNode replicas = 3;
 
-message DataWriteResponse {
-    bool success = 1;
+    message ReplicaNode {
+        string host = 1;
+        uint32 port = 2;
+    }
 }
 
 message DataReadRequest {

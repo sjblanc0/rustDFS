@@ -1,5 +1,5 @@
 # ── build stage ──────────────────────────────────────────────────────────────
-FROM rust:latest AS builder
+FROM rust:1.92.0-trixie AS builder
 
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
@@ -27,9 +27,9 @@ RUN mkdir -p /etc/rustdfs /var/log/rustdfs /var/lib/rustdfs/data
 COPY --from=builder /build/target/release/rustDFS-datanode /usr/local/bin/rustDFS-datanode
 COPY example/rdfsconf.toml /etc/rustdfs/rdfsconf.toml
 
-# overridden per-service in docker-compose with NODE_ID
-ARG NODE_ID=dn0
+# overridden per-service in docker-compose with PORT
+ARG PORT=5001
 
 EXPOSE 5001
 
-ENTRYPOINT ["sh", "-c", "rustDFS-datanode --id $NODE_ID"]
+ENTRYPOINT ["sh", "-c", "rustDFS-datanode --port $PORT"]

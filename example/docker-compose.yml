@@ -13,10 +13,10 @@ services:
       context: ..
       dockerfile: example/Dockerfile.datanode
       args:
-        NODE_ID: dn0
+        PORT: 5001
     hostname: datanode0
     environment:
-      NODE_ID: dn0
+      PORT: 5001
     ports:
       - "5001:5001"
     networks:
@@ -25,16 +25,19 @@ services:
       test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=datanode0:5001"]
       interval: 5s
       retries: 20
+    depends_on:
+      namenode:
+        condition: service_healthy
 
   datanode1:
     build:
       context: ..
       dockerfile: example/Dockerfile.datanode
       args:
-        NODE_ID: dn1
+        PORT: 5002
     hostname: datanode1
     environment:
-      NODE_ID: dn1
+      PORT: 5002
     ports:
       - "5002:5002"
     networks:
@@ -43,16 +46,19 @@ services:
       test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=datanode1:5002"]
       interval: 5s
       retries: 20
+    depends_on:
+      namenode:
+        condition: service_healthy
 
   datanode2:
     build:
       context: ..
       dockerfile: example/Dockerfile.datanode
       args:
-        NODE_ID: dn2
+        PORT: 5003
     hostname: datanode2
     environment:
-      NODE_ID: dn2
+      PORT: 5003
     ports:
       - "5003:5003"
     networks:
@@ -61,6 +67,9 @@ services:
       test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=datanode2:5003"]
       interval: 5s
       retries: 20
+    depends_on:
+      namenode:
+        condition: service_healthy
 
   # ── name node ───────────────────────────────────────────────────────────────
 
@@ -77,13 +86,6 @@ services:
       test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=namenode:5000"]
       interval: 5s
       retries: 20
-    depends_on:
-      datanode0:
-        condition: service_healthy
-      datanode1:
-        condition: service_healthy
-      datanode2:
-        condition: service_healthy
 
   # ── client ───────────────────────────────────────────────────────────────
 
@@ -96,6 +98,10 @@ services:
       - rustdfs
     entrypoint: ["/usr/local/bin/client.sh"]
     depends_on:
-      namenode:
+      datanode0:
+        condition: service_healthy
+      datanode1:
+        condition: service_healthy
+      datanode2:
         condition: service_healthy
     tty: true

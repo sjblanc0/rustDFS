@@ -1,8 +1,8 @@
- - dynamic data nodes -> register with name node like real HDFS
  - name nodes load files via Blockreport
  - support health check between nodes
  - support multiple name nodes -> notify other name nodes on change
  - implement inodes / directory structure
  - support rebalancing data
  - daemonize client
+ - stream data directly between client <-> data node like actual HDFS
  

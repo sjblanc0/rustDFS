@@ -2,9 +2,12 @@ syntax = "proto3";
 
 package name_node;
 
+import "google/protobuf/empty.proto";
+
 service NameNode {
     rpc Write (stream NameWriteRequest) returns (NameWriteResponse);
     rpc Read (NameReadRequest) returns (stream NameReadResponse);
+    rpc Register (NameRegisterRequest) returns (google.protobuf.Empty);
 }
 
 message NameWriteRequest {
@@ -23,4 +26,9 @@ message NameReadRequest {
 message NameReadResponse {
     string fileName = 1;
     bytes data = 4;
+}
+
+message NameRegisterRequest {
+    string host = 1;
+    uint32 port = 2;
 }
