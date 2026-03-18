@@ -119,10 +119,12 @@ impl RustDFSClient {
 
         'outer: for block in &start_res.blocks {
             let data_host = to_host_addr(&block.nodes[0]);
+            let mut data = data_client(&data_host, &self.out).await?;
+
             let (tx, rx) = mpsc::channel::<WriteRequest>(CHANNEL_SIZE);
             let in_stream = ReceiverStream::new(rx);
+
             let reader = reader.clone();
-            let mut data = data_client(&data_host, &self.out).await?;
             let out_a = self.out.clone();
             let out_b = self.out.clone();
 
