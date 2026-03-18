@@ -7,8 +7,8 @@ use std::sync::mpsc;
 use std::thread;
 use tonic::Status;
 
-use super::error::RustDFSError;
-use super::result::Result;
+use crate::error::RustDFSError;
+use crate::result::Result;
 
 /**
  * Manages logging operations for RustDFS.
@@ -21,9 +21,9 @@ use super::result::Result;
  */
 #[derive(Debug, Clone)]
 pub struct LogManager {
-    channel: Sender<String>,
     level: LogLevel,
     silent: bool,
+    channel: Sender<String>,
 }
 
 /**

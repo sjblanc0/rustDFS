@@ -11,25 +11,25 @@ echo
 
 # 1. write small.txt to the name node
 echo "── Step 1: Writing files/small.txt to DFS ──"
-$CLIENT write $NAMENODE /root/files/small.txt small.txt
+$CLIENT write $NAMENODE /root/files/small.txt small.txt -v info
 echo
 sleep 5
 
 # 2. read small.txt from the name node
 echo "── Step 2: Reading small.txt from DFS ──"
-$CLIENT read $NAMENODE small.txt /root/read/small.txt
+$CLIENT read $NAMENODE small.txt /root/read/small.txt -v info
 echo
 sleep 5
 
 # 3. write large.txt to the name node
 echo "── Step 3: Writing files/large.txt to DFS ──"
-$CLIENT write $NAMENODE /root/files/large.txt large.txt
+$CLIENT write $NAMENODE /root/files/large.txt large.txt -v info
 echo
 sleep 5
 
 # 4. read large.txt from the name node
 echo "── Step 4: Reading large.txt from DFS ──"
-$CLIENT read $NAMENODE large.txt /root/read/large.txt
+$CLIENT read $NAMENODE large.txt /root/read/large.txt -v info
 echo
 sleep 5
 

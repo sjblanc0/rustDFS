@@ -15,6 +15,7 @@ RUN apt-get update \
     && apt-get install -y ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+RUN mkdir -p /root/read
 COPY --from=builder /build/example/files /root/files
 COPY --from=builder /build/target/release/rustDFS-client /usr/local/bin/rustDFS-client
 COPY --from=builder /build/example/client.sh /usr/local/bin/client.sh

@@ -3,6 +3,8 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use tonic::Status;
 use tonic::transport::Endpoint;
 
+use rustdfs_proto::name::Block;
+
 use crate::error::RustDFSError;
 use crate::logging::LogManager;
 use crate::result::{Result, ServiceResult};
@@ -57,11 +59,12 @@ impl HostAddr {
     pub fn to_endpoint(&self, logger: &LogManager) -> Result<Endpoint> {
         let addr = self.to_socket_addr(logger)?;
 
-        Endpoint::from_shared(format!("{}{}", HTTP_PREFIX, addr)).map_err(|e| {
-            let err = err_not_resolve(&self.hostname, self.port, Some(e));
-            logger.write_err(&err);
-            err
-        })
+        Endpoint::from_shared(format!("{}{}", HTTP_PREFIX, addr))
+            .map_err(|e| {
+                let err = err_not_resolve(&self.hostname, self.port, Some(e));
+                logger.write_err(&err);
+                err
+            })
     }
 
     /**

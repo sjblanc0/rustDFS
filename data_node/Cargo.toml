@@ -5,15 +5,18 @@ edition = "2024"
 rust-version = "1.92.0"
 
 [dependencies]
+rustdfs-proto = { path = "../proto", version = "0.0.0" }
 rustdfs-shared = { path = "../shared", version = "0.0.0" }
 clap = { version = "4.5.59", features = ["derive"] }
 futures = "0.3.31"
 hostname = "0.4"
 tonic = "0.14"
-tokio = { version = "1.47", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "fs"] }
 tokio-retry2 = { version = "0.9", features = ["jitter"] }
 tonic-reflection = "0.14"
 tonic-health = "0.14"
+tokio-stream = "0.1"
+async-stream = "0.3.6"
 
 [[bin]]
 name = "rustDFS-datanode"

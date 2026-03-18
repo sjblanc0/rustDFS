@@ -1,5 +1,7 @@
 use clap::{Parser, ValueEnum};
 
+use crate::out::Verbosity;
+
 /**
  * Supported operations for RustDFS client.
  */
@@ -12,7 +14,7 @@ pub enum Operation {
 /**
  * Command line arguments for RustDFS client.
  */
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
 pub struct RustDFSArgs {
     #[arg(value_enum)]
@@ -23,6 +25,9 @@ pub struct RustDFSArgs {
     pub source: String,
 
     pub dest: String,
+
+    #[arg(short, long, value_enum, default_value_t = Verbosity::Error)]
+    pub verbosity: Verbosity,
 }
 
 impl RustDFSArgs {

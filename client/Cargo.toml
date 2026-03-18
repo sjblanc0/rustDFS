@@ -1,19 +1,21 @@
 [package]
 name = "rustdfs-client"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2024"
 rust-version = "1.92.0"
 
 [dependencies]
+rustdfs-proto = { path = "../proto", version = "0.0.0" }
 clap = { version = "4.5.59", features = ["derive"] }
+uuid = { version = "1.21.0", features = ["v4", "fast-rng"] }
+chrono = "0.4.43"
 futures = "0.3.31"
 tonic = "0.14"
 prost = "0.14"
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "fs"] }
+tokio-stream = "0.1"
+tokio-retry2 = { version = "0.9", features = ["jitter"] }
 tonic-prost = "0.14"
-
-[build-dependencies]
-tonic-prost-build = "0.14"
 
 [[bin]]
 name = "rustDFS-client"

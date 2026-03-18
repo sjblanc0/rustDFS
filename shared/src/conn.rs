@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tonic::Status;
+use tonic::{IntoStreamingRequest, Status};
 use tonic::transport::Channel;
+use tonic::Streaming;
+use futures::future::FutureExt;
 
+use rustdfs_proto::data::data_node_client::DataNodeClient;
+use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
 use crate::host::HostAddr;
 use crate::logging::{LogLevel, LogManager};
-use crate::proto::data_node_client::DataNodeClient;
-use crate::proto::{DataReadRequest, DataReadResponse, DataWriteRequest};
 use crate::result::ServiceResult;
 
 /**
@@ -45,10 +47,10 @@ impl DataNodeManager {
      *  @param log_mgr - [LogManager] for logging operations.
      *  @return DataNodeManager - Initialized data node manager.
      */
-    pub fn new(log_mgr: &LogManager) -> Self {
+    pub fn new(log_mgr: LogManager) -> Self {
         DataNodeManager {
             connections: RwLock::new(HashMap::new()),
-            log_mgr: log_mgr.clone(),
+            log_mgr,
         }
     }
 
@@ -136,10 +138,19 @@ impl DataNodeConn {
      *  @param request - DataWriteRequest containing block ID, data, and replica node IDs.
      *  @return ServiceResult<()> - Result indicating success or failure.
      */
-    pub async fn write(self, request: DataWriteRequest) -> ServiceResult<()> {
-        self.client.clone().write(request).await?;
+    pub async fn write(
+        self, 
+        request: impl IntoStreamingRequest<Message = WriteRequest>,
+    ) -> ServiceResult<Streaming<()>> {
+        let stream = self.client.clone()
+            .write(request)
+            .map(|res| match res {
+                Ok(response) => Ok(response.into_inner()),
+                Err(e) => Err(e),
+            })
+            .await?;
 
-        Ok(())
+        Ok(stream)
     }
 
     /**
@@ -148,9 +159,11 @@ impl DataNodeConn {
      *  @param request - DataReadRequest containing block ID.
      *  @return ServiceResult<DataReadResponse> - Result containing the read data or an error.
      */
-    pub async fn read(self, request: DataReadRequest) -> ServiceResult<DataReadResponse> {
+    pub async fn read(
+        self, 
+        request: ReadRequest
+    ) -> ServiceResult<Streaming<ReadResponse>> {
         let response = self.client.clone().read(request).await?;
-
         Ok(response.into_inner())
     }
 }

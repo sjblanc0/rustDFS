@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = [ "client","data_node", "name_node", "shared"]
+members = [ "client","data_node", "name_node", "proto", "shared"]

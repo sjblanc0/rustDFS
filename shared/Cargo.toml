@@ -5,8 +5,10 @@ edition = "2024"
 rust-version = "1.92.0"
 
 [dependencies]
+rustdfs-proto = { path = "../proto", version = "0.0.0" }
 chrono = "0.4.43"
 clap = { version = "4.5.59", features = ["derive"] }
+futures = "0.3.31"
 toml = "0.9.8"
 tonic = "0.14"
 prost = "0.14"
@@ -14,9 +16,6 @@ serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.47" }
 tonic-prost = "0.14"
 prost-types = "0.14"
-
-[build-dependencies]
-tonic-prost-build = "0.14"
 
 [lib]
 path = "src/lib.rs"

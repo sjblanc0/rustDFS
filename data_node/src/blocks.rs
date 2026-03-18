@@ -1,6 +1,8 @@
-use std::fs::{self, OpenOptions};
-use std::io::{Error as IoError, Write};
+use std::fs::{self};
+use std::io::{Error as IoError};
 use std::path::Path;
+use tokio::fs::{File, OpenOptions};
+use tokio::io::{BufReader, BufWriter, SeekFrom, AsyncSeekExt};
 
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::logging::LogManager;
@@ -11,7 +13,7 @@ use tonic::Status;
  * Manages data directory operations for the data node.
  * Responsible for reading and writing data blocks to the local filesystem.
  */
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BlockManager {
     path: String,
     log_mgr: LogManager,
@@ -47,50 +49,54 @@ impl BlockManager {
         })
     }
 
-    /**
-     * Writes a block of data to the data node.
-     *
-     *  @param block_id - Identifier for the data block.
-     *  @param data - Byte slice containing the data to write.
-     *  @return ServiceResult<()> - Result indicating success or failure.
-     */
-    pub fn write_block(&self, block_id: &str, data: &[u8]) -> ServiceResult<()> {
+    pub async fn read_buf(
+        &self, 
+        path: &str,
+        buf_size: usize,
+        offset: u64,
+    ) -> ServiceResult<BufReader<File>> {
+        let block_path = format!("{}/{}", self.path, path);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&block_path)
+            .await
+            .map_err(|e| {
+                let err = status_err_reading(path, e);
+                self.log_mgr.write_status(&err);
+                err
+            })?;
+        
+        file.seek(SeekFrom::Start(offset))
+            .await
+            .map_err(|e| {
+                let err = status_err_reading(path, e);
+                self.log_mgr.write_status(&err);
+                err
+            })?;
+
+        Ok(BufReader::with_capacity(buf_size, file))
+    }
+
+    pub async fn write_buf(
+        &self,
+        block_id: &str,
+        buf_size: usize,
+    ) -> ServiceResult<BufWriter<File>> {
         let block_path = format!("{}/{}", self.path, block_id);
 
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .write(true)
             .create(true)
-            .truncate(true)
+            .append(true)
             .open(&block_path)
+            .await
             .map_err(|e| {
                 let err = status_err_writing(block_id, e);
                 self.log_mgr.write_status(&err);
                 err
             })?;
 
-        file.write_all(data).map_err(|e| {
-            let err = status_err_writing(block_id, e);
-            self.log_mgr.write_status(&err);
-            err
-        })?;
-
-        Ok(())
-    }
-
-    /**
-     * Reads a block of data from the data node.
-     *
-     *  @param block_id - Identifier for the data block.
-     *  @return ServiceResult<Vec<u8>> - Byte vector containing data or error.
-     */
-    pub fn read_block(&self, block_id: &str) -> ServiceResult<Vec<u8>> {
-        let block_path = format!("{}/{}", self.path, block_id);
-
-        fs::read(block_path).map_err(|e| {
-            let err = status_err_reading(block_id, e);
-            self.log_mgr.write_status(&err);
-            err
-        })
+        Ok(BufWriter::with_capacity(buf_size, file))
     }
 }
 

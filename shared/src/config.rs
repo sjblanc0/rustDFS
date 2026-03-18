@@ -1,12 +1,15 @@
-use serde::Deserialize;
+use std::fmt;
 use std::fs::File;
 use std::io::Read;
+use serde::{Deserialize, Deserializer, de};
 use toml;
 
-use super::error::RustDFSError;
-use super::result::Result;
+use crate::bytesize::ByteSize;
+use crate::error::RustDFSError;
+use crate::result::Result;
 
 const CONFIG_FILE_GLOBAL: &str = "/etc/rustdfs/rdfsconf.toml";
+const LEASE_DURATION_GLOBAL: u32 =  120;
 const LOG_FILE_GLOBAL: &str = "/var/log/rustdfs";
 const DATA_DIR_GLOBAL: &str = "/var/lib/rustdfs/data";
 
@@ -14,6 +17,7 @@ const DATA_DIR_GLOBAL: &str = "/var/lib/rustdfs/data";
  * Configuration structure for RustDFS. Corresponds to TOML config file.
  *
  *  @field replica_count - Number of replicas for each data block.
+ *  @field lease_duration - Duration of lease in seconds.
  *  @field name_node - Config for name node. Identifies location on network.
  *  @field data_node - Shared config for data nodes.
  *
@@ -36,6 +40,15 @@ const DATA_DIR_GLOBAL: &str = "/var/lib/rustdfs/data";
 pub struct RustDFSConfig {
     #[serde(rename = "replica-count", default)]
     pub replica_count: u32,
+
+    #[serde(rename = "lease-duration", default="default_lease_duration")]
+    pub lease_duration: u32,
+
+    #[serde(rename = "message-size", default="default_message_size")]
+    pub message_size: ByteSize,
+
+    #[serde(rename = "block-size", default="default_block_size")]
+    pub block_size: ByteSize,
 
     #[serde(rename = "name-node")]
     pub name_node: NameNodeConfig,
@@ -110,6 +123,18 @@ impl RustDFSConfig {
 }
 
 // Default fields
+
+fn default_message_size() -> ByteSize {
+    ByteSize(1024 * 64)  // 64 KB
+}
+
+fn default_block_size() -> ByteSize {
+    ByteSize(1024 * 1024 * 32)  // 32 MB
+}
+
+fn default_lease_duration() -> u32 {
+    LEASE_DURATION_GLOBAL
+}
 
 fn default_log_file() -> String {
     LOG_FILE_GLOBAL.to_string()

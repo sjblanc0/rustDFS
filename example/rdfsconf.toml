@@ -1,4 +1,6 @@
 replica-count = 2
+message-size = "16KB"
+block-size = "4MB"
 
 [name-node]
 host = "namenode"
