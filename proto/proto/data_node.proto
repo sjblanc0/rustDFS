@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package data_node;
+
+import "google/protobuf/empty.proto";
+
+service DataNode {
+    rpc Write (stream WriteRequest) returns (stream google.protobuf.Empty);
+    rpc Read (ReadRequest) returns (stream ReadResponse);
+}
+
+message WriteRequest {
+    string blockID = 1;
+    bytes data = 2;
+    repeated ReplicaNode replicas = 3;
+
+    message ReplicaNode {
+        string host = 1;
+        uint32 port = 2;
+    }
+}
+
+message ReadRequest {
+    string blockID = 1;
+    uint64 offset = 2;
+}
+
+message ReadResponse {
+    string blockID = 1;
+    bytes data = 2;
+}

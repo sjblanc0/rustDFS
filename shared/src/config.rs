@@ -3,39 +3,56 @@ use std::fs::File;
 use std::io::Read;
 use toml;
 
-use super::error::RustDFSError;
-use super::result::Result;
+use crate::bytesize::ByteSize;
+use crate::error::RustDFSError;
+use crate::result::Result;
 
 const CONFIG_FILE_GLOBAL: &str = "/etc/rustdfs/rdfsconf.toml";
+const LEASE_DURATION_GLOBAL: u32 = 120;
 const LOG_FILE_GLOBAL: &str = "/var/log/rustdfs";
 const DATA_DIR_GLOBAL: &str = "/var/lib/rustdfs/data";
 
 /**
- * Configuration structure for RustDFS. Corresponds to TOML config file.
+ * Configuration structure for RustDFS. Deserialized from a TOML config file.
  *
- *  @field replica_count - Number of replicas for each data block.
- *  @field name_node - Config for name node. Identifies location on network.
+ *  @field replica_count - Number of replicas per data block.
+ *  @field lease_duration - Write lease duration in seconds.
+ *  @field message_size - Max gRPC message size for streaming (e.g. "64KB").
+ *  @field block_size - Max size of a single data block (e.g. "32MB").
+ *  @field name_node - Network config for the name node.
  *  @field data_node - Shared config for data nodes.
  *
  * Sample TOML structure:
  *
  * ```toml
- *  replica-count = 0
+ *  replica-count = 2
+ *  lease-duration = 120
+ *  message-size = "64KB"
+ *  block-size = "32MB"
  *
  *  [name-node]
- *  host = namenode1
- *  port = 50051
- *  log-file = "/path/to/logfile"
+ *  host = "namenode1"
+ *  port = 5000
+ *  log-file = "/var/log/rustdfs/namenode.log"
  *
  *  [data-node]
- *  data-dir = "/path/to/datadir"
- *  log-file = "/path/to/logfile"
+ *  data-dir = "/var/lib/rustdfs/data"
+ *  log-file = "/var/log/rustdfs/datanode.log"
  * ```
  */
 #[derive(Deserialize)]
 pub struct RustDFSConfig {
     #[serde(rename = "replica-count", default)]
     pub replica_count: u32,
+
+    #[serde(rename = "lease-duration", default = "default_lease_duration")]
+    pub lease_duration: u32,
+
+    #[serde(rename = "message-size", default = "default_message_size")]
+    pub message_size: ByteSize,
+
+    #[serde(rename = "block-size", default = "default_block_size")]
+    pub block_size: ByteSize,
 
     #[serde(rename = "name-node")]
     pub name_node: NameNodeConfig,
@@ -45,11 +62,11 @@ pub struct RustDFSConfig {
 }
 
 /**
- * Configuration for a Name Node.
+ * Network and logging configuration for the Name Node.
  *
  *  @field host - Hostname or IP address of the name node.
- *  @field port - Port number for the name node service.
- *  @field log_file - Path to the log file for logging.
+ *  @field port - Port number for the name node gRPC service.
+ *  @field log_file - Path to the log file.
  */
 #[derive(Deserialize)]
 pub struct NameNodeConfig {
@@ -64,10 +81,10 @@ pub struct NameNodeConfig {
 }
 
 /**
- * Configuration for a Data Node.
+ * Storage and logging configuration for Data Nodes.
  *
- *  @field data_dir - Directory path for storing data blocks.
- *  @field log_file - Path to the log file for logging.
+ *  @field data_dir - Directory path for storing data blocks on disk.
+ *  @field log_file - Path to the log file.
  */
 #[derive(Deserialize)]
 pub struct DataNodeConfig {
@@ -110,6 +127,18 @@ impl RustDFSConfig {
 }
 
 // Default fields
+
+fn default_message_size() -> ByteSize {
+    ByteSize(1024 * 64) // 64 KB
+}
+
+fn default_block_size() -> ByteSize {
+    ByteSize(1024 * 1024 * 32) // 32 MB
+}
+
+fn default_lease_duration() -> u32 {
+    LEASE_DURATION_GLOBAL
+}
 
 fn default_log_file() -> String {
     LOG_FILE_GLOBAL.to_string()

@@ -1,25 +1,28 @@
+/**
+ * RustDFS Client binary.
+ *
+ * Parses CLI args, connects to the Name Node, and
+ * performs the requested read or write operation.
+ */
 mod args;
 mod client;
-mod proto;
+mod error;
+mod host;
+mod out;
+mod result;
 
-use std::net::ToSocketAddrs;
-
-use args::{Operation, RustDFSArgs};
+use args::RustDFSArgs;
 use client::RustDFSClient;
-use proto::name_node_client::NameNodeClient;
 
 #[tokio::main]
 async fn main() {
     let args = RustDFSArgs::new();
-    let addr = args.host.to_socket_addrs().unwrap().next().unwrap();
-    let addr_str = format!("http://{}", addr);
+    let op = args.op.clone();
 
-    println!("Connecting to NameNode at {}", addr_str);
-
-    let mut client = NameNodeClient::connect(addr_str).await.unwrap();
-
-    match args.op {
-        Operation::Write => client.client_write(args).await,
-        Operation::Read => client.client_read(args).await,
-    }
+    RustDFSClient::new(args)
+        .await
+        .unwrap()
+        .run(op)
+        .await
+        .unwrap();
 }

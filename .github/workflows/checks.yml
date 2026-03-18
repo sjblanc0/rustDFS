@@ -36,3 +36,13 @@ jobs:
           command: |
             rustup component add rustfmt && \
               cargo fmt --all -- --check
+  machete:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: machete
+        uses: ./.github/workflows/build-action
+        with:
+          command: |
+            cargo install cargo-machete && \
+              cargo machete

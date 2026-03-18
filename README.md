@@ -2,31 +2,36 @@
 
 A distributed file system written in Rust, inspired by [Apache HDFS](https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsDesign.html). 
 
-Files are split into 2 MB blocks, distributed across multiple data nodes with configurable replication, and tracked by a central name node.
+Files are split into configurable fixed-size blocks (default 4 MB), distributed across multiple data nodes with configurable replication, and tracked by a central name node.
 
 ## Modules
 
 | Crate | Binary | Description |
 |---|---|---|
 | `client` | `rustDFS-client` | CLI tool that reads / writes files to the cluster via gRPC streaming |
-| `name_node` | `rustDFS-namenode` | Metadata server — maps filenames to block IDs and data node locations, coordinates replication |
-| `data_node` | `rustDFS-datanode` | Storage server — persists blocks on local disk and replicates to peer data nodes |
-| `shared` | *(library)* | Common code — config parsing, proto definitions, connection management, logging, error types |
+| `name_node` | `rustDFS-namenode` | Metadata server — manages the file namespace, allocates blocks, assigns data nodes, and issues write leases |
+| `data_node` | `rustDFS-datanode` | Storage server — persists blocks on local disk and chains replication to peer data nodes |
+| `proto` | *(library)* | Protocol Buffer definitions and generated gRPC code (`name_node.proto`, `data_node.proto`) |
+| `shared` | *(library)* | Common code — config parsing, connection management, logging, error types, host resolution |
 
 ## How It Works
 
 ### Write Path
 
-1. The client streams 2 MB chunks to the name node.
-2. The name node assigns a UUID to each block and randomly selects a primary data node plus replica targets.
-3. The primary data node writes the block to disk and forwards it to the replica nodes.
+1. The client sends a `WriteStartRequest` to the name node with the file name, file size, and a unique operation ID.
+2. The name node allocates corresponding blocks, assigns a UUID to each, and randomly selects data nodes from the registered pool. It returns the block assignments and a time-limited write lease.
+3. For each block, the client opens a **streaming gRPC connection directly to the primary data node** and sends `WriteRequest` messages containing the data, alongside an ordered list of replica nodes.
+4. The primary data node writes each chunk to local disk and **forwards it to the next replica**. Each replica repeats this until the chain is exhausted.
+5. Per-chunk acknowledgements flow back through the replication chain to the client.
+6. After all blocks are written, the client calls `WriteEnd` to finalize the file and release the lease.
 
 ### Read Path
 
-1. The client requests a file from the name node.
-2. The name node looks up block descriptors (block ID → data node locations).
-3. Blocks are read from data nodes with failover across replicas (randomized order).
-4. Data is streamed back to the client.
+1. The client sends a `ReadRequest` to the name node with the file name.
+2. The name node returns the latest completed file descriptor: block IDs, sizes, and a shuffled list of replica nodes per block.
+3. For each block, the client connects **directly to a data node** and streams `ReadResponse` messages containing data chunks.
+4. If a data node fails mid-stream the client retries on the next replica, resuming from the byte offset where it left off.
+5. Received chunks are written sequentially to a local file.
 
 ## Developing
 
@@ -57,10 +62,19 @@ Binaries are placed in `target/release/`:
 
 ## Configuration
 
-All nodes read a shared TOML configuration file (default: `/etc/rustdfs/rdfsconf.toml`). See [example/rdfsconf.toml](example/rdfsconf.toml) for a full example.
+All nodes read a shared TOML configuration file (default: `/etc/rustdfs/rdfsconf.toml`). See [example/basic/rdfsconf.toml](example/basic/rdfsconf.toml) for a full example.
+
+| Key | Default | Description |
+|---|---|---|
+| `replica-count` | `0` | Number of replica copies per block (in addition to the primary) |
+| `lease-duration` | `120` | Write lease duration in seconds |
+| `message-size` | `"64KB"` | Max gRPC streaming chunk size (supports B, KB, MB, GB suffixes) |
+| `block-size` | `"32MB"` | Max size of a single data block (supports B, KB, MB, GB suffixes) |
 
 ```toml
 replica-count = 2
+message-size = "16KB"
+block-size = "4MB"
 
 [name-node]
 host = "namenode"
@@ -110,14 +124,19 @@ GitHub Actions runs three checks on every change to `main`:
 
 ## Running with Docker Compose
 
-The `example/` directory contains a ready-to-run demo with Docker Compose that spins up 3 data nodes, 1 name node, and a client container.
+The `example/` directory contains two ready-to-run demos:
+
+| Example | Description |
+|---|---|
+| [`example/basic`](example/basic/) | Write + read verification (small and large files) |
+| [`example/leasing`](example/leasing/) | Write-lease conflict and read-during-overwrite tests |
+
+Each has its own `docker-compose.yml` that spins up 3 data nodes, 1 name node, and a client container:
 
 ```bash
-cd example
+cd example/basic
 docker compose up --build
 ```
-
-The demo writes `small.txt` and `large.txt` into the cluster, reads them back, and diffs the results to verify data integrity.
 
 ## Project Layout
 
@@ -126,13 +145,20 @@ rustDFS/
 ├── client/          # CLI client crate
 ├── data_node/       # Data node server crate
 ├── name_node/       # Name node server crate
-├── shared/          # Shared library crate
-├── proto/           # Protocol Buffer definitions
-│   ├── name_node.proto
-│   └── data_node.proto
-└── example/         # Docker Compose demo
-    ├── docker-compose.yml
-    ├── rdfsconf.toml
-    ├── client.sh
-    └── files/       # Sample files for testing
+├── shared/          # Shared library crate (config, connections, logging, errors)
+├── proto/           # Protobuf / gRPC crate
+│   └── proto/
+│       ├── name_node.proto
+│       └── data_node.proto
+└── example/         # Docker Compose demos
+    ├── basic/       # Read / write verification
+    │   ├── docker-compose.yml
+    │   ├── rdfsconf.toml
+    │   ├── client.sh
+    │   └── files/
+    └── leasing/     # Lease conflict & concurrent read tests
+        ├── docker-compose.yml
+        ├── rdfsconf.toml
+        ├── client.sh
+        └── files/
 ```
