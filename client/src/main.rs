@@ -1,3 +1,9 @@
+/**
+ * RustDFS Client binary.
+ *
+ * Parses CLI args, connects to the Name Node, and
+ * performs the requested read or write operation.
+ */
 mod args;
 mod client;
 mod error;

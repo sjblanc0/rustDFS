@@ -1,3 +1,9 @@
+/**
+ * RustDFS Name Node binary.
+ *
+ * Loads config from the global TOML file, parses CLI args,
+ * then starts the Name Node gRPC server.
+ */
 mod args;
 mod files;
 mod service;

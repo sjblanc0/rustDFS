@@ -12,12 +12,12 @@ use rustdfs_proto::data::data_node_client::DataNodeClient;
 use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
 
 /**
- * Manages data node connections for RustDFS.
- * Provides access to [DataNodeConn] instances by node ID.
- *  => guarded by RwLock for concurrent reads / writes
+ * Manages gRPC client connections to data nodes.
+ * Provides thread-safe access to [DataNodeConn] instances by hostname.
+ *  => connections map guarded by [RwLock] for concurrent reads / writes.
  *
- *  @field connections - HashMap of host to DataNodeConn.
- *  @field log_mgr - LogManager for logging operations.
+ *  @field connections - HashMap of hostname to [DataNodeConn].
+ *  @field log_mgr - Owned [LogManager] for logging connection events.
  */
 #[derive(Debug)]
 pub struct DataNodeManager {
@@ -26,13 +26,11 @@ pub struct DataNodeManager {
 }
 
 /**
- * Represents a connection to a data node.
+ * Represents a gRPC client connection to a single data node.
+ * Cloneable — the underlying [DataNodeClient] uses a shared channel.
  *
- * Manages gRPC client connection and provides methods
- * for reading and writing data blocks.
- *
- *  @field host - [HostAddr] location of data node.
- *  @field client_ref - Mutex-wrapped gRPC client. Lazily initialized.
+ *  @field host - [HostAddr] of the connected data node.
+ *  @field client - gRPC [DataNodeClient] for issuing read/write RPCs.
  */
 #[derive(Debug, Clone)]
 pub struct DataNodeConn {
@@ -102,10 +100,10 @@ impl DataNodeManager {
     }
 
     /**
-     * Retrieves a data node connection by its host.
+     * Retrieves a cloned data node connection by its hostname.
      *
-     *  @param host - The host of the data node.
-     *  @return ServiceResult<&DataNodeConn> - Result containing a reference to [DataNodeConn] or an error.
+     *  @param host - Hostname of the data node.
+     *  @return ServiceResult<DataNodeConn> - Cloned connection or an error if unknown.
      */
     pub async fn get_conn(&self, host: &str) -> ServiceResult<DataNodeConn> {
         self.connections
@@ -133,10 +131,11 @@ impl DataNodeManager {
 
 impl DataNodeConn {
     /**
-     * Writes a block of data to the connected data node.
+     * Sends a streaming write request to the connected data node.
+     * Returns a response stream of per-chunk acknowledgements.
      *
-     *  @param request - DataWriteRequest containing block ID, data, and replica node IDs.
-     *  @return ServiceResult<()> - Result indicating success or failure.
+     *  @param request - Streaming [WriteRequest] messages (block ID, data, replica info).
+     *  @return ServiceResult<Streaming<()>> - Stream of acknowledgements or error.
      */
     pub async fn write(
         self,
@@ -156,10 +155,10 @@ impl DataNodeConn {
     }
 
     /**
-     * Reads a block of data from the connected data node.
+     * Sends a read request and returns a response stream of data chunks.
      *
-     *  @param request - DataReadRequest containing block ID.
-     *  @return ServiceResult<DataReadResponse> - Result containing the read data or an error.
+     *  @param request - [ReadRequest] containing block ID and byte offset.
+     *  @return ServiceResult<Streaming<ReadResponse>> - Stream of data chunks or error.
      */
     pub async fn read(self, request: ReadRequest) -> ServiceResult<Streaming<ReadResponse>> {
         let response = self.client.clone().read(request).await?;

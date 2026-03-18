@@ -3,11 +3,23 @@ use clap::ValueEnum;
 
 use crate::error::RustDFSError;
 
+/**
+ * Manages console output for the client with verbosity filtering.
+ *
+ *  @field verbosity - Minimum [Verbosity] level to display.
+ */
 #[derive(Debug, Clone)]
 pub struct OutManager {
     pub verbosity: Verbosity,
 }
 
+/**
+ * Client output verbosity levels.
+ *
+ *  @variant Silent - No output.
+ *  @variant Error - Only errors.
+ *  @variant Info - Informational messages and errors.
+ */
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, ValueEnum)]
 pub enum Verbosity {
     Silent,
@@ -16,6 +28,12 @@ pub enum Verbosity {
 }
 
 impl OutManager {
+    /**
+     * Writes a message to the console if verbosity is met.
+     *
+     *  @param verbosity - Level of this message.
+     *  @param provider - Closure producing the message string.
+     */
     pub fn write(&self, verbosity: Verbosity, provider: impl FnOnce() -> String) {
         if self.verbosity == Verbosity::Silent || verbosity > self.verbosity {
             return;

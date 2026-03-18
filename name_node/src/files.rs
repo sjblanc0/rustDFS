@@ -12,9 +12,17 @@ use rustdfs_shared::logging::LogManager;
 use rustdfs_shared::{host::HostAddr, result::ServiceResult};
 
 /**
- * Manages the namespace for the distributed file system.
- *  => Keeps track of files and their associated blocks and data nodes.
- *  => RwLock is used to ensure thread-safe access to the namespace data.
+ * Manages the file namespace for the name node.
+ * Tracks file-to-block mappings, write leases, and file versioning.
+ *  => Uses a [VecDeque] per file path to keep up to two versions
+ *     (the current completed version and an in-progress write).
+ *  => Thread-safe via [RwLock] on the file map.
+ *
+ *  @field files - Map of file path to versioned [FileDescriptor] deque.
+ *  @field log_mgr - [LogManager] for logging file operations.
+ *  @field lease_duration - Write lease duration in seconds.
+ *  @field replica_ct - Number of replica copies per block.
+ *  @field block_size - Maximum block size in bytes.
  */
 #[derive(Debug)]
 pub struct FileManager {
@@ -25,12 +33,25 @@ pub struct FileManager {
     block_size: usize,
 }
 
+/**
+ * Describes a file version, including its block layout and write status.
+ *
+ *  @field status - Current [WriteStatus] (InProgress or Complete).
+ *  @field blocks - Ordered list of [BlockDescriptor]s comprising this file.
+ */
 #[derive(Debug, Clone)]
 pub struct FileDescriptor {
     pub status: WriteStatus,
     pub blocks: Vec<BlockDescriptor>,
 }
 
+/**
+ * Describes a single data block within a file.
+ *
+ *  @field id - UUID string identifying this block.
+ *  @field size - Maximum size of the block in bytes.
+ *  @field nodes - Ordered list of [HostAddr]s: first is primary, rest are replicas.
+ */
 #[derive(Debug, Clone)]
 pub struct BlockDescriptor {
     pub id: String,
@@ -38,6 +59,12 @@ pub struct BlockDescriptor {
     pub nodes: Vec<HostAddr>,
 }
 
+/**
+ * Tracks the write lifecycle of a file version.
+ *
+ *  @variant InProgress - Write lease active; holds the operation ID and expiry.
+ *  @variant Complete - Write is finalized; the file is readable.
+ */
 #[derive(Debug, Clone)]
 pub enum WriteStatus {
     InProgress { id: String, expire: u64 },
@@ -46,7 +73,13 @@ pub enum WriteStatus {
 
 impl FileManager {
     /**
-     * Creates a new FileManager instance.
+     * Creates a new [FileManager].
+     *
+     *  @param log_mgr - Shared [LogManager] instance.
+     *  @param lease_duration - Lease duration in seconds.
+     *  @param replica_ct - Number of replica copies per block.
+     *  @param block_size - Maximum block size in bytes.
+     *  @return FileManager
      */
     pub fn new(
         log_mgr: LogManager,
@@ -64,10 +97,15 @@ impl FileManager {
     }
 
     /**
-     * Adds a new file and its block descriptors to the namespace.
+     * Initializes a file write by allocating blocks and acquiring a lease.
+     * If an in-progress lease has expired it is replaced; if the file
+     * already has two versions the oldest is evicted.
      *
-     *  @param file_name - Name of the file.
-     *  @param blocks - Vector of BlockDescriptor for the file.
+     *  @param operation_id - Unique ID for this write operation.
+     *  @param file_name - Target file path in the namespace.
+     *  @param file_size - Total file size in bytes to compute block count.
+     *  @param data_nodes - [DataNodeManager] used to select storage nodes.
+     *  @return ServiceResult<(FileDescriptor, u64)> - Block assignments and lease expiry.
      */
     pub async fn init_write(
         &self,
@@ -114,6 +152,14 @@ impl FileManager {
         Ok((desc, time + self.lease_duration as u64))
     }
 
+    /**
+     * Marks a file write as complete, transitioning its status to [WriteStatus::Complete].
+     * Fails if the operation ID does not match the active lease.
+     *
+     *  @param file_name - File path in the namespace.
+     *  @param operation_id - ID of the write operation that started the lease.
+     *  @return ServiceResult<()> - Success or error.
+     */
     pub async fn complete_write(&self, file_name: &str, operation_id: &str) -> ServiceResult<()> {
         let mut files = self.files.write().await;
 
@@ -144,6 +190,13 @@ impl FileManager {
         }
     }
 
+    /**
+     * Renews the write lease for a file, extending the expiry timestamp.
+     *
+     *  @param file_name - File path in the namespace.
+     *  @param operation_id - ID of the write operation holding the lease.
+     *  @return ServiceResult<u64> - New lease expiry in epoch seconds.
+     */
     pub async fn renew_lease(&self, file_name: &str, operation_id: &str) -> ServiceResult<u64> {
         let time = self.get_time_sec()?;
         let mut files = self.files.write().await;
@@ -176,10 +229,12 @@ impl FileManager {
     }
 
     /**
-     * Retrieves the block descriptors for a given file.
+     * Reads the latest completed file descriptor for a given file.
+     * Skips any in-progress versions and returns the most recent
+     * completed one.
      *
-     *  @param file_name - Name of the file.
-     *  @return ServiceResult<Vec<BlockDescriptor>> - Vector of BlockDescriptor or error.
+     *  @param file_name - File path in the namespace.
+     *  @return ServiceResult<FileDescriptor> - File metadata or not-found error.
      */
     pub async fn read(&self, file_name: &str) -> ServiceResult<FileDescriptor> {
         let files = self.files.read().await;
@@ -201,6 +256,14 @@ impl FileManager {
         Err(err)
     }
 
+    /**
+     * Allocates the specified number of blocks, each assigned
+     * to randomly selected data nodes (primary + replicas).
+     *
+     *  @param count - Number of blocks to allocate.
+     *  @param data_nodes - [DataNodeManager] for selecting storage nodes.
+     *  @return ServiceResult<Vec<BlockDescriptor>> - Allocated block descriptors.
+     */
     async fn allocate_blocks(
         &self,
         count: u32,
@@ -223,6 +286,10 @@ impl FileManager {
             .collect::<ServiceResult<Vec<BlockDescriptor>>>()
     }
 
+    /**
+     * Randomly selects a primary data node plus `replica_ct` replicas.
+     * Returns an error if not enough data nodes are registered.
+     */
     // randomly selects a primary data node and replica nodes
     // for write operation
     async fn select_nodes(&self, data_nodes: &DataNodeManager) -> ServiceResult<Vec<HostAddr>> {
@@ -239,6 +306,9 @@ impl FileManager {
         Ok(selected.to_vec())
     }
 
+    /**
+     * Returns the current time in epoch seconds.
+     */
     fn get_time_sec(&self) -> ServiceResult<u64> {
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)

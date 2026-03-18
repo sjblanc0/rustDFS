@@ -1,5 +1,4 @@
 use rand::seq::SliceRandom;
-use tokio_stream::StreamExt;
 use tonic::transport::Server;
 use tonic::{Request, Response};
 use tonic_health::server as health_server;
@@ -23,16 +22,17 @@ use crate::files::FileManager;
 //type ReadStream = Pin<Box<dyn Stream<Item = ServiceResult<NameReadResponse>> + Send>>;
 
 /**
- * Name Node service implementation for RustDFS.
+ * Name Node gRPC service implementation.
  *
- * Handles file metadata management, including mapping files to
- * data blocks and their locations.
+ * Manages file metadata, block allocation, write leases, and
+ * data node registration. Acts as the central coordinator for
+ * the RustDFS cluster.
  *
- *  @field host - HostAddr of the name node.
- *  @field replica_ct - Number of replicas for each data block.
- *  @field name_mgr - FileManager for managing file metadata.
- *  @field data_nodes - DataNodeManager for managing data node connections.
- *  @field log_mgr - LogManager for logging operations.
+ *  @field host - [HostAddr] the name node listens on.
+ *  @field file_mgr - [FileManager] for namespace and lease tracking.
+ *  @field data_nodes - [DataNodeManager] for registered data node connections.
+ *  @field log_mgr - [LogManager] for logging operations.
+ *  @field message_size - Max gRPC streaming message size in bytes.
  */
 #[derive(Debug)]
 pub struct NameNodeService {
@@ -48,12 +48,12 @@ impl NameNode for NameNodeService {
     //type ReadStream = ReadStream;
 
     /**
-     * Writes a file to the RustDFS cluster.
-     * Breaks file into blocks, assigns to data nodes, and manages replication.
-     * Concurrently writes 8 blocks at a time before polling for more requests.
+     * Initiates a file write.
+     * Allocates blocks across data nodes and acquires a write lease.
+     * Returns block assignments and the lease expiry timestamp.
      *
-     *  @param request - Streaming<NameWriteRequest> containing file name and data blocks.
-     *  @return Result<Response<NameWriteResponse>> - Response indicating success or failure.
+     *  @param request - [WriteStartRequest] with file name, size, and operation ID.
+     *  @return ServiceResult<Response<WriteStartResponse>> - Block assignments and lease info.
      */
     async fn write_start(
         &self,
@@ -100,6 +100,12 @@ impl NameNode for NameNodeService {
         Ok(Response::new(res))
     }
 
+    /**
+     * Completes a file write, transitioning the file from InProgress to Complete.
+     *
+     *  @param request - [WriteEndRequest] with file name and operation ID.
+     *  @return ServiceResult<Response<()>> - Success or error if lease is invalid.
+     */
     async fn write_end(&self, request: Request<WriteEndRequest>) -> ServiceResult<Response<()>> {
         let req = request.into_inner();
 
@@ -110,6 +116,12 @@ impl NameNode for NameNodeService {
         Ok(Response::new(()))
     }
 
+    /**
+     * Renews the write lease for a file, extending the expiry.
+     *
+     *  @param request - [RenewLeaseRequest] with file name and operation ID.
+     *  @return ServiceResult<Response<RenewLeaseResponse>> - New expiry timestamp.
+     */
     async fn renew_lease(
         &self,
         request: Request<RenewLeaseRequest>,
@@ -131,12 +143,12 @@ impl NameNode for NameNodeService {
     }
 
     /**
-     * Reads a file from the RustDFS cluster.
-     * Retrieves file metadata and streams data blocks from data nodes. Concurrently reads
-     * 8 blocks and flushes to client. This is to manage memory usage on the name node.
+     * Returns the block descriptors for a file.
+     * Provides block IDs, sizes, and a shuffled list of replica nodes
+     * to the client so it can read directly from data nodes.
      *
-     *  @param request - NameReadRequest containing file name.
-     *  @return Result<Response<ReadStream>> - Response streaming file data or error.
+     *  @param request - [ReadRequest] containing the file name.
+     *  @return ServiceResult<Response<ReadResponse>> - Block metadata for the file.
      */
     async fn read(&self, request: Request<ReadRequest>) -> ServiceResult<Response<ReadResponse>> {
         let req = request.into_inner();
@@ -180,10 +192,10 @@ impl NameNode for NameNodeService {
 
     /**
      * Registers a data node with the name node.
-     * Adds the data node connection to the DataNodeManager.
+     * Establishes a gRPC connection and adds it to the [DataNodeManager].
      *
-     *  @param request - NameRegisterRequest containing data node host and port.
-     *  @return Result<Response<()>> - Response indicating success or failure.
+     *  @param request - [RegisterRequest] with host and port of the data node.
+     *  @return ServiceResult<Response<()>> - Success or connection error.
      */
     async fn register(&self, request: Request<RegisterRequest>) -> ServiceResult<Response<()>> {
         let req = request.into_inner();
@@ -200,11 +212,11 @@ impl NameNode for NameNodeService {
 
 impl NameNodeService {
     /**
-     * Creates a new instance of NameNodeService.
+     * Creates a new [NameNodeService] instance.
      *
-     *  @param args - Command line arguments for the data node.
-     *  @param config - Configuration for the RustDFS cluster.
-     *  @return Result<NameNodeService> - Initialized NameNodeService instance or error.
+     *  @param args - CLI arguments (log level, silent mode).
+     *  @param config - [RustDFSConfig] with cluster-wide settings.
+     *  @return Result<NameNodeService> - Initialized service or error.
      */
     pub fn new(args: RustDFSArgs, config: RustDFSConfig) -> Result<Self> {
         let log_mgr = LogManager::new(config.name_node.log_file, args.log_level, args.silent)?;
@@ -228,10 +240,11 @@ impl NameNodeService {
     }
 
     /**
-     * Starts the NameNodeService server to handle incoming requests.
-     * Sets up health reporting and service reflection for gRPC.
+     * Starts the Name Node gRPC server.
+     * Registers health reporting and service reflection, then listens
+     * on the configured host and port.
      *
-     *  @return Result<()> - Result indicating success or failure of the server.
+     *  @return Result<()> - Resolves when the server shuts down.
      */
     pub async fn serve(self) -> Result<()> {
         let (health_rep, health_svc) = health_server::health_reporter();

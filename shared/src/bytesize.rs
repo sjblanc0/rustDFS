@@ -7,19 +7,29 @@ use crate::result::Result;
 
 /**
  * A size in bytes, deserialized from a human-readable string.
- * Supports suffixes: B, KB, MB, GB (case-insensitive).
+ * Used for config fields like message-size and block-size.
  *
+ * Supports suffixes: B, KB, MB, GB (case-insensitive).
  * Examples: "64KB", "2MB", "1024B", "1GB"
+ *
+ *  @field 0 - The size value in bytes.
  */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteSize(pub usize);
 
 impl ByteSize {
+    /**
+     * Returns the byte size as a usize.
+     */
     pub fn as_usize(&self) -> usize {
         self.0
     }
 }
 
+/**
+ * Custom [Deserialize] implementation for [ByteSize].
+ * Deserializes a human-readable string (e.g. "64KB") into a byte count.
+ */
 impl<'de> Deserialize<'de> for ByteSize {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
     where
@@ -30,6 +40,14 @@ impl<'de> Deserialize<'de> for ByteSize {
     }
 }
 
+/**
+ * Parses a human-readable byte size string into a [ByteSize].
+ * Recognizes suffixes B, KB, MB, GB (case-insensitive).
+ * A plain number without a suffix is treated as raw bytes.
+ *
+ *  @param s - Input string (e.g. "64KB", "1024", "2MB").
+ *  @return Result<ByteSize> - Parsed byte size or error.
+ */
 fn parse_byte_size(s: &str) -> Result<ByteSize> {
     let s = s.trim();
 

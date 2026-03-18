@@ -8,6 +8,13 @@ use crate::result::Result;
 
 const HTTP_PREFIX: &str = "https://";
 
+/**
+ * Represents a host address with hostname and port.
+ * Client-side variant — returns [RustDFSError] on resolution failure.
+ *
+ *  @field hostname - Hostname or IP address.
+ *  @field port - Port number.
+ */
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct HostAddr {
     pub hostname: String,
@@ -15,6 +22,12 @@ pub struct HostAddr {
 }
 
 impl HostAddr {
+    /**
+     * Parses a "host:port" string into a [HostAddr].
+     *
+     *  @param host_str - Input string (e.g. "namenode1:5000").
+     *  @return Result<HostAddr> - Parsed address or error.
+     */
     pub fn from_str(host_str: &str) -> Result<Self> {
         let parts: Vec<&str> = host_str.split(':').collect();
 
@@ -30,6 +43,11 @@ impl HostAddr {
         Ok(HostAddr { hostname, port })
     }
 
+    /**
+     * Resolves the hostname and converts to a tonic [Endpoint].
+     *
+     *  @return Result<Endpoint> - Endpoint for gRPC connection.
+     */
     pub fn to_endpoint(&self) -> Result<Endpoint> {
         let addr_str = format!("{}:{}", self.hostname, self.port);
         let mut addrs_iter = addr_str
@@ -51,12 +69,12 @@ impl HostAddr {
 
 fn err_invalid_host_str(host: &str) -> RustDFSError {
     let msg = format!("Invalid host string: {}", host);
-    RustDFSError::CustomError(msg)
+    RustDFSError::Custom(msg)
 }
 
 fn err_invalid_port(host: &str) -> RustDFSError {
     let msg = format!("Invalid port: {}", host);
-    RustDFSError::CustomError(msg)
+    RustDFSError::Custom(msg)
 }
 
 fn err_not_resolve<D>(host: &str, port: u16, err: Option<D>) -> RustDFSError
@@ -66,11 +84,11 @@ where
     match err {
         Some(e) => {
             let msg = format!("Invalid address {}:{}. Error: {}", host, port, e);
-            RustDFSError::CustomError(msg)
+            RustDFSError::Custom(msg)
         }
         None => {
             let msg = format!("Invalid address {}:{}", host, port);
-            RustDFSError::CustomError(msg)
+            RustDFSError::Custom(msg)
         }
     }
 }

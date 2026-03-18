@@ -1,9 +1,7 @@
-use futures::FutureExt;
 use futures::future::TryFutureExt;
 use futures::stream::Stream;
 use rustdfs_proto::data::write_request::ReplicaNode;
-use std::io::Write;
-use std::io::{Error as IoError, Read};
+use std::io::Error as IoError;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::vec;
@@ -40,16 +38,17 @@ type ReadStream = Pin<Box<dyn Stream<Item = ServiceResult<ReadResponse>> + Send>
 type RetryResult<T> = std::result::Result<T, RetryError<RustDFSError>>;
 
 /**
- * Data Node service implementation for RustDFS.
+ * Data Node gRPC service implementation.
  *
- * Handles read and write requests for data blocks,
- * and manages replication to other data nodes.
+ * Handles streaming block writes (with replication chaining),
+ * streaming block reads, and lifecycle management (health, Name Node registration).
  *
- *  @field host - HostAddr of the data node.
- *  @field name_host - HostAddr of the name node.
- *  @field data_nodes - DataNodeManager for managing data node connections.
- *  @field data_mgr - BlockManager for managing data blocks on local filesystem.
- *  @field log_mgr - LogManager for logging operations.
+ *  @field host - [HostAddr] this data node listens on.
+ *  @field name_host - [HostAddr] of the Name Node to register with.
+ *  @field data_nodes - Shared [DataNodeManager] for replication connections.
+ *  @field data_mgr - [BlockManager] for local block I/O.
+ *  @field log_mgr - [LogManager] for logging.
+ *  @field message_size - Max gRPC streaming message size in bytes.
  */
 #[derive(Debug)]
 pub struct DataNodeService {
@@ -67,12 +66,23 @@ impl DataNode for DataNodeService {
     type ReadStream = ReadStream;
 
     /**
-     * Writes a block of data to the data node.
-     * Also replicates the block to other data nodes as specified.
-     * Stores connections to new replica nodes in [DataNodeManager].
+     * Handles a streaming block write.
+     *  => Returns the response stream immediately, then processes
+     *     input in spawned tasks.
      *
-     *  @param request - DataWriteRequest containing block ID, data, and replica node IDs.
-     *  @return Result<Response<()>> - Response indicating success or failure.
+     * Task architecture (managed by [JoinSet]):
+     *  1. Consumer — reads each [WriteRequest] from the client, writes
+     *     the chunk to disk via [BlockManager], and forwards it to the
+     *     replication channel (if replicas are specified).
+     *  2. Replicator — establishes a gRPC connection to the next replica
+     *     node in the chain and streams forwarded chunks. Sends a per-chunk
+     *     acknowledgement back to the client.
+     *  3. Supervisor (tokio::spawn) — joins on the JoinSet; on any task
+     *     error it shuts down remaining tasks and forwards the error to
+     *     the client stream.
+     *
+     *  @param request - Streaming [WriteRequest] messages.
+     *  @return ServiceResult<Response<WriteStream>> - Acknowledgement stream.
      */
     async fn write(
         &self,
@@ -110,13 +120,13 @@ impl DataNode for DataNodeService {
                                     tx_init_a
                                         .send(None)
                                         .await
-                                        .map_err(|e| status_err_internal_channel(e))?;
+                                        .map_err(status_err_internal_channel)?;
                                 }
 
                                 tx_client_a
                                     .send(Ok(()))
                                     .await
-                                    .map_err(|e| status_err_sending_client(e))?;
+                                    .map_err(status_err_sending_client)?;
                             }
                             _ => {
                                 let repl = WriteRequest {
@@ -129,13 +139,10 @@ impl DataNode for DataNodeService {
                                     tx_init_a
                                         .send(Some(req.replicas[0].clone()))
                                         .await
-                                        .map_err(|e| status_err_internal_channel(e))?;
+                                        .map_err(status_err_internal_channel)?;
                                 }
 
-                                tx_repl
-                                    .send(repl)
-                                    .await
-                                    .map_err(|err| status_err_forwarding(err))?;
+                                tx_repl.send(repl).await.map_err(status_err_forwarding)?;
                             }
                         }
                     }
@@ -152,16 +159,14 @@ impl DataNode for DataNodeService {
             drop(tx_init_b);
 
             let repl = match rx_init.recv().await {
-                Some(opt) => match opt {
-                    Some(repl) => {
-                        drop(rx_init);
-                        repl
-                    }
-                    None => {
-                        drop(rx_init);
-                        return Ok(());
-                    }
-                },
+                Some(Some(repl)) => {
+                    drop(rx_init);
+                    repl
+                }
+                Some(None) => {
+                    drop(rx_init);
+                    return Ok(());
+                }
                 None => {
                     drop(rx_init);
                     return Ok(());
@@ -181,7 +186,7 @@ impl DataNode for DataNodeService {
                         tx_client_b
                             .send(Ok(()))
                             .await
-                            .map_err(|e| status_err_sending_client(e))?;
+                            .map_err(status_err_sending_client)?;
                     }
                     Err(err) => {
                         let _ = tx_client_b.send(Err(err.clone())).await;
@@ -230,10 +235,12 @@ impl DataNode for DataNodeService {
     }
 
     /**
-     * Reads a block of data from the data node.
+     * Handles a streaming block read.
+     * Opens the block file at the requested offset and streams
+     * data chunks back to the client through a channel.
      *
-     *  @param request - DataReadRequest containing block ID.
-     *  @return Result<Response<DataReadResponse>> - Response containing data block or error.
+     *  @param request - [ReadRequest] with block ID and byte offset.
+     *  @return ServiceResult<Response<ReadStream>> - Stream of data chunks.
      */
     async fn read(&self, request: Request<ReadRequest>) -> ServiceResult<Response<ReadStream>> {
         let req = request.into_inner();
@@ -293,13 +300,12 @@ impl DataNode for DataNodeService {
 
 impl DataNodeService {
     /**
-     * Creates a new DataNodeService instance.
-     * Maps ID from args to config and initializes components, including connections
-     * to other data nodes.
+     * Creates a new [DataNodeService].
+     * Resolves the local hostname, configures logging and block storage.
      *
-     *  @param args - Command line arguments for the data node.
-     *  @param config - Configuration for the RustDFS cluster.
-     *  @return Result<DataNodeService> - Initialized DataNodeService instance or error.
+     *  @param args - CLI arguments (port, log level, silent mode).
+     *  @param config - [RustDFSConfig] with cluster-wide settings.
+     *  @return Result<DataNodeService> - Initialized service or error.
      */
     pub fn new(args: RustDFSArgs, config: RustDFSConfig) -> Result<Self> {
         let logger = LogManager::new(config.data_node.log_file, args.log_level, args.silent)?;
@@ -321,10 +327,10 @@ impl DataNodeService {
     }
 
     /**
-     * Starts the DataNodeService server to handle incoming requests.
-     * Sets up health reporting and service reflection for gRPC.
+     * Starts the Data Node gRPC server and concurrently registers
+     * with the Name Node (with exponential-backoff retries).
      *
-     *  @return Result<()> - Result indicating success or failure of the server.
+     *  @return Result<()> - Resolves when the server shuts down.
      */
     pub async fn serve(self) -> Result<()> {
         let (health_rep, health_svc) = health_server::health_reporter();
@@ -455,21 +461,6 @@ fn hostname(logger: &LogManager) -> Result<String> {
             logger.write_err(&err);
             err
         })
-}
-
-// Format bytes into human-readable string
-// e.g., 1024 -> "1.00 KB", 1048576 -> "1.00 MB"
-fn format_bytes(bytes: usize) -> String {
-    const KB: usize = 1024;
-    const MB: usize = 1024 * KB;
-
-    if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
 }
 
 // Error status helpers

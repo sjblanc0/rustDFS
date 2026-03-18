@@ -1,3 +1,8 @@
+/**
+ * Build script for the rustdfs-proto crate.
+ * Compiles data_node.proto and name_node.proto via tonic-prost-build
+ * and writes a file descriptor set for reflection.
+ */
 use std::{env, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
