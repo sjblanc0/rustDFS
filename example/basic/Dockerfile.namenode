@@ -1,0 +1,33 @@
+# ── build stage ──────────────────────────────────────────────────────────────
+FROM rust:1.92.0-trixie AS builder
+
+# protoc is required by tonic-prost-build
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+RUN cargo build --release --bin rustDFS-namenode
+
+# ── runtime stage ─────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y \
+        ca-certificates \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN wget \
+    -qO/usr/local/bin/grpc_health_probe \
+    https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/v0.4.20/grpc_health_probe-linux-amd64
+
+RUN chmod +x /usr/local/bin/grpc_health_probe
+
+RUN mkdir -p /etc/rustdfs /var/log/rustdfs /var/lib/rustdfs
+
+COPY --from=builder /build/target/release/rustDFS-namenode /usr/local/bin/rustDFS-namenode
+COPY example/basic/rdfsconf.toml /etc/rustdfs/rdfsconf.toml
+
+EXPOSE 5000
+
+ENTRYPOINT ["rustDFS-namenode"]
