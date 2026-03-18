@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package name_node;
+
+import "google/protobuf/empty.proto";
+
+service NameNode {
+    rpc WriteStart (WriteStartRequest) returns (WriteStartResponse);
+    rpc WriteEnd (WriteEndRequest) returns (google.protobuf.Empty);
+    rpc RenewLease (RenewLeaseRequest) returns (RenewLeaseResponse);
+    rpc Read (ReadRequest) returns (ReadResponse);
+    rpc Register (RegisterRequest) returns (google.protobuf.Empty);
+}
+
+message WriteStartRequest {
+    string fileName = 1;
+    string operationID = 2;
+    uint64 fileSize = 3;
+}
+
+message WriteStartResponse {
+    string fileName = 1;
+    uint64 expire = 2;
+    uint64 messageSize = 3;
+    repeated Block blocks = 4;
+}
+
+message WriteEndRequest {
+    string fileName = 1;
+    string operationID = 2;
+    bool success = 3;
+}
+
+message RenewLeaseRequest {
+    string fileName = 1;
+    string operationID = 2;
+}
+
+message RenewLeaseResponse {
+    string fileName = 1;
+    uint64 expire = 2;
+}
+
+message ReadRequest {
+    string fileName = 1;
+}
+
+message ReadResponse {
+    string fileName = 1;
+    uint64 messageSize = 2;
+    repeated Block blocks = 3;
+}
+
+message RegisterRequest {
+    string host = 1;
+    uint32 port = 2;
+}
+
+message Block {
+    string blockID = 1;
+    uint64 blockSize = 2;
+    repeated Node nodes = 4;
+
+    message Node {
+        string host = 1;
+        uint32 port = 2;
+    }
+}
