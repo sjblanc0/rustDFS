@@ -27,7 +27,7 @@ impl<'de> Deserialize<'de> for ByteSize {
     {
         let s = String::deserialize(deserializer)?;
         parse_byte_size(&s)
-            .map_err(|e| SerdeError::custom(e))
+            .map_err(SerdeError::custom)
     }
 }
 

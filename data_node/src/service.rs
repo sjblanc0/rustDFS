@@ -1,31 +1,23 @@
-use futures::future::{TryFutureExt, join_all};
+use futures::future::TryFutureExt;
 use rustdfs_proto::data::write_request::ReplicaNode;
 use tokio::sync::mpsc::error::SendError;
-use tokio::task::{self, JoinError, JoinHandle, JoinSet};
-use futures::{FutureExt, stream};
+use tokio::task::{JoinError, JoinSet};
+use futures::FutureExt;
 use tokio_stream::wrappers::ReceiverStream;
-use std::alloc::handle_alloc_error;
 use std::pin::Pin;
-use std::io::{Error as IoError, Read, WriterPanicked};
+use std::io::{Error as IoError, Read};
 use std::sync::Arc;
 use std::vec;
-use tokio::sync::Notify;
-use tokio::sync::broadcast;
-use tokio::sync::oneshot;
-use tokio::sync::oneshot::error::RecvError;
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::{self};
 use tokio_stream::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_retry2::strategy::{ExponentialBackoff, MaxInterval, jitter};
 use tokio_retry2::{Retry, RetryError};
 use tonic::transport::Server;
-use tonic::{Request, Response, Status, client};
+use tonic::{Request, Response, Status};
 use tonic_health::server::{self as health_server, HealthReporter};
-use tonic_reflection::server::Builder;
 use tonic::Streaming;
-use tokio::pin;
 use tokio::join;
-use async_stream::stream;
 use std::io::Write;
 use futures::stream::Stream;
 
@@ -35,9 +27,9 @@ use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
 use rustdfs_proto::data::data_node_server::{DataNode, DataNodeServer};
-use rustdfs_proto::data::{self, ReadRequest, ReadResponse, WriteRequest};
+use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
 use rustdfs_proto::name::name_node_client::NameNodeClient;
-use rustdfs_proto::name::{RegisterRequest, block};
+use rustdfs_proto::name::RegisterRequest;
 use rustdfs_shared::result::{Result, ServiceResult};
 
 use crate::args::RustDFSArgs;
@@ -113,11 +105,11 @@ impl DataNode for DataNodeService {
 
                         writer.write(&req.data)
                             .await
-                            .map_err(|err| status_err_writing(err))?;
+                            .map_err(status_err_writing)?;
 
                         writer.flush()
                             .await
-                            .map_err(|err| status_err_writing(err))?;
+                            .map_err(status_err_writing)?;
                         
                         match req.replicas.len() {
                             0 => {

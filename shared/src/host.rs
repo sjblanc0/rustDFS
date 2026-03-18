@@ -3,7 +3,6 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use tonic::Status;
 use tonic::transport::Endpoint;
 
-use rustdfs_proto::name::Block;
 
 use crate::error::RustDFSError;
 use crate::logging::LogManager;

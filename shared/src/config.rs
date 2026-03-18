@@ -1,7 +1,6 @@
-use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use serde::{Deserialize, Deserializer, de};
+use serde::Deserialize;
 use toml;
 
 use crate::bytesize::ByteSize;

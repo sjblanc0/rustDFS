@@ -1,9 +1,5 @@
 use futures::StreamExt;
-use futures::io::Write;
 use tokio::sync::Mutex;
-use futures::stream;
-use prost::Name;
-use prost::bytes::Buf;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -17,7 +13,6 @@ use tonic::transport::Channel;
 use rustdfs_proto::name::name_node_client::NameNodeClient;
 use rustdfs_proto::data::WriteRequest;
 use rustdfs_proto::data::write_request::ReplicaNode;
-use rustdfs_proto::name::Block;
 use rustdfs_proto::name::WriteEndRequest;
 use rustdfs_proto::name::ReadRequest as NameReadRequest;
 use rustdfs_proto::data::ReadRequest as DataReadRequest;
@@ -30,7 +25,7 @@ use crate::error::RustDFSError;
 use crate::out::OutManager;
 use crate::result::Result;
 use crate::args::{Operation, RustDFSArgs};
-use crate::host::{self, HostAddr};
+use crate::host::HostAddr;
 use crate::out::Verbosity;
 
 const CHANNEL_SIZE: usize = 8;
@@ -77,7 +72,7 @@ impl RustDFSClient {
         let start_req = write_start_req(&self.source, &self.dest, &op_id).await?;
         let start_res = name.write_start(start_req)
             .await
-            .map_err(|e| RustDFSError::TonicStatusError(e))?
+            .map_err(RustDFSError::TonicStatusError)?
             .into_inner();
 
         let mut err = None;
@@ -94,7 +89,7 @@ impl RustDFSClient {
 
             let mut out_stream = data.write(in_stream)
                 .await
-                .map_err(|e| RustDFSError::TonicStatusError(e))?
+                .map_err(RustDFSError::TonicStatusError)?
                 .into_inner();
 
             match join!(
@@ -194,7 +189,7 @@ impl RustDFSClient {
         let name_req = name_read_req(&self.source);
         let name_res = name.read(name_req)
             .await
-            .map_err(|e| RustDFSError::TonicStatusError(e))?
+            .map_err(RustDFSError::TonicStatusError)?
             .into_inner();
 
         let mut writer = writer(&self.dest, name_res.message_size as usize)
@@ -275,8 +270,8 @@ async fn name_client(host: &HostAddr, out: &OutManager) -> Result<NameNodeClient
     NameNodeClient::connect(endpoint)
         .await
         .map_err(|e| {
-            let err = RustDFSError::TonicError(e);
-            err
+            
+            RustDFSError::TonicError(e)
         })
 }
 
@@ -286,8 +281,8 @@ async fn data_client(host: &HostAddr) -> Result<DataNodeClient<Channel>> {
     DataNodeClient::connect(endpoint)
         .await
         .map_err(|e| {
-            let err = RustDFSError::TonicError(e);
-            err
+            
+            RustDFSError::TonicError(e)
         })
 }
 
@@ -297,7 +292,7 @@ async fn write_start_req(source: &str, dest: &str, id: &str) -> Result<WriteStar
         operation_id: id.to_string(),
         file_size: fs::metadata(source)
             .await
-            .map_err(|e| RustDFSError::IoError(e))?
+            .map_err(RustDFSError::IoError)?
             .len(),
     };
     Ok(req)
@@ -320,7 +315,7 @@ fn name_read_req(source: &str) -> NameReadRequest {
 fn data_read_req(block_id: &str, offset: u64) -> DataReadRequest {
     DataReadRequest {
         block_id: block_id.to_string(),
-        offset: offset,
+        offset,
     }
 }
 
@@ -346,7 +341,7 @@ async fn reader(
 ) -> Result<Arc<Mutex<BufReader<File>>>> {
     let file = File::open(fp)
         .await
-        .map_err(|e| RustDFSError::IoError(e))?;
+        .map_err(RustDFSError::IoError)?;
     let reader = BufReader::with_capacity(size, file);
     Ok(Arc::new(Mutex::new(reader)))
 }
@@ -357,7 +352,7 @@ async fn writer(
 ) -> Result<BufWriter<File>> {
     let file = File::create(fp)
         .await
-        .map_err(|e| RustDFSError::IoError(e))?;
+        .map_err(RustDFSError::IoError)?;
     let writer = BufWriter::with_capacity(size, file);
     Ok(writer)
 }

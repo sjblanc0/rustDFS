@@ -35,21 +35,21 @@ impl HostAddr {
         let addr_str = format!("{}:{}", self.hostname, self.port);
         let mut addrs_iter = addr_str.to_socket_addrs()
             .map_err(|e| {
-                let err = err_not_resolve(&self.hostname, self.port, Some(e));
-                err
+                
+                err_not_resolve(&self.hostname, self.port, Some(e))
             })?;
 
         let addr = addrs_iter.next()
             .ok_or_else(|| {
                 type R = RustDFSError;
-                let err = err_not_resolve::<R>(&self.hostname, self.port, None);
-                err
+                
+                err_not_resolve::<R>(&self.hostname, self.port, None)
             })?;
 
         Endpoint::from_shared(format!("{}{}", HTTP_PREFIX, addr))
             .map_err(|e| {
-                let err = err_not_resolve(&self.hostname, self.port, Some(e));
-                err
+                
+                err_not_resolve(&self.hostname, self.port, Some(e))
             })
     }
 }

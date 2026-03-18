@@ -1,15 +1,10 @@
-use std::sync::Arc;
 use std::collections::VecDeque;
 use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
 use std::collections::HashMap;
-use std::fs::File;
 use futures::future;
-use futures::io::Write;
-use rand::rand_core::block;
 use rand::seq::SliceRandom;
 use tokio::sync::RwLock;
 use tonic::Status;
-use tonic_prost_build::manual::Service;
 use uuid::Uuid;
 
 use rustdfs_shared::{host::HostAddr, result::ServiceResult};
@@ -64,10 +59,10 @@ impl FileManager {
     ) -> Self {
         FileManager {
             files: RwLock::new(HashMap::new()),
-            log_mgr: log_mgr,
-            lease_duration: lease_duration,
-            replica_ct: replica_ct,
-            block_size: block_size,
+            log_mgr,
+            lease_duration,
+            replica_ct,
+            block_size,
         }
     }
 
@@ -92,24 +87,21 @@ impl FileManager {
             .entry(file_name.to_string())
             .or_insert(VecDeque::new());
 
-        match deque.back() {
-            Some(desc) => match &desc.status {
-                WriteStatus::InProgress { expire , .. } if time < *expire => {
-                    let err = status_file_locked(file_name);
-                    self.log_mgr.write_status(&err);
-                    return Err(err);
-                }
-                WriteStatus::InProgress { .. } => {
-                    deque.pop_back();
-                }
-                _ => {
-                    if deque.len() == 2 {
-                        deque.pop_front();
-                    }
+        if let Some(desc) = deque.back() { match &desc.status {
+            WriteStatus::InProgress { expire , .. } if time < *expire => {
+                let err = status_file_locked(file_name);
+                self.log_mgr.write_status(&err);
+                return Err(err);
+            }
+            WriteStatus::InProgress { .. } => {
+                deque.pop_back();
+            }
+            _ => {
+                if deque.len() == 2 {
+                    deque.pop_front();
                 }
             }
-            _ => {}
-        }
+        } }
 
         let desc = FileDescriptor {
             status: WriteStatus::InProgress { 
@@ -132,13 +124,13 @@ impl FileManager {
 
         let desc = files.get_mut(file_name)
             .ok_or_else(|| {
-                let err = status_file_not_found(&file_name);
+                let err = status_file_not_found(file_name);
                 self.log_mgr.write_status(&err);
                 err
             })?
             .back_mut()
             .ok_or_else(|| {
-                let err = status_file_not_found(&file_name);
+                let err = status_file_not_found(file_name);
                 self.log_mgr.write_status(&err);
                 err
             })?;
@@ -210,11 +202,8 @@ impl FileManager {
             })?;
         
         for desc in deque.iter().rev() {
-            match &desc.status {
-                WriteStatus::Complete => {
-                    return Ok(desc.clone());
-                }
-                _ => {}
+            if let WriteStatus::Complete = &desc.status {
+                return Ok(desc.clone());
             }
         }
 
@@ -242,11 +231,9 @@ impl FileManager {
                 .collect::<Vec<_>>()
         ); 
         
-        Ok(
-            futs.await
+        futs.await
                 .into_iter()
-                .collect::<ServiceResult<Vec<BlockDescriptor>>>()?
-        )
+                .collect::<ServiceResult<Vec<BlockDescriptor>>>()
     }
 
     // randomly selects a primary data node and replica nodes
@@ -257,7 +244,7 @@ impl FileManager {
     ) -> ServiceResult<Vec<HostAddr>> {
         let mut keys = data_nodes.get_hosts().await;
 
-        if keys.len() <= self.replica_ct as usize {
+        if keys.len() <= self.replica_ct {
             let err = status_not_enough_nodes(keys.len(), self.replica_ct);
             self.log_mgr.write_status(&err);
             return Err(err);

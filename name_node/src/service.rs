@@ -1,20 +1,8 @@
-use std::sync::Arc;
-use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
-use futures::Future;
-use futures::pin_mut;
-use mpsc::Sender;
-use futures::stream;
 use rand::seq::SliceRandom;
-use std::pin::Pin;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::StreamExt;
 use tonic::transport::Server;
-use tonic::{Request, Response, Status, Streaming};
+use tonic::{Request, Response};
 use tonic_health::server as health_server;
-use tonic_reflection::server::Builder;
-use uuid::Uuid;
-use futures::future;
 
 use rustdfs_shared::config::RustDFSConfig;
 use rustdfs_shared::conn::DataNodeManager;
@@ -30,10 +18,7 @@ use rustdfs_proto::name::{
 use rustdfs_shared::result::{Result, ServiceResult};
 
 use crate::args::RustDFSArgs;
-use crate::files::BlockDescriptor;
 use crate::files::FileManager;
-use crate::files::WriteStatus;
-use crate::files::FileDescriptor;
 
 //type ReadStream = Pin<Box<dyn Stream<Item = ServiceResult<NameReadResponse>> + Send>>;
 
@@ -86,7 +71,7 @@ impl NameNode for NameNodeService {
 
         let res = WriteStartResponse { 
             file_name: req.file_name.clone(),
-            expire: expire,
+            expire,
             message_size: self.message_size as u64,
             blocks: desc.blocks
                 .iter()
@@ -165,7 +150,7 @@ impl NameNode for NameNodeService {
                 .map(|b| Block {
                     block_id: b.id.clone(),
                     block_size: b.size,
-                    nodes: (|| {
+                    nodes: {
                         let mut nodes = b.nodes
                             .iter()
                             .map(|h| Node {
@@ -179,7 +164,7 @@ impl NameNode for NameNodeService {
                         // nearest node first
                         nodes.shuffle(&mut rand::rng());
                         nodes
-                    })(),
+                    },
                 })
                 .collect(),
         };
@@ -233,8 +218,8 @@ impl NameNodeService {
                 config.replica_count as usize,
                 config.block_size.as_usize(),
             ),
-            data_nodes: data_nodes,
-            log_mgr: log_mgr,
+            data_nodes,
+            log_mgr,
             message_size: config.message_size.as_usize(),
         })
     }
