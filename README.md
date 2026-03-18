@@ -120,6 +120,7 @@ GitHub Actions runs three checks on every change to `main`:
 |---|---|
 | `build` | `cargo build --all-features` |
 | `clippy` | `cargo clippy --all-targets --all-features -- -D warnings` |
+| `machete` | `machete check` |
 | `rustfmt` | `cargo fmt --all -- --check` |
 
 ## Running with Docker Compose
