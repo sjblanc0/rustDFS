@@ -1,32 +1,32 @@
+use core::str;
 use futures::StreamExt;
-use tokio::sync::Mutex;
-use tokio_stream::wrappers::ReceiverStream;
+use std::sync::Arc;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::join;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use std::sync::Arc;
-use core::str;
-use uuid::Uuid;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
+use uuid::Uuid;
 
-use rustdfs_proto::name::name_node_client::NameNodeClient;
-use rustdfs_proto::data::WriteRequest;
-use rustdfs_proto::data::write_request::ReplicaNode;
-use rustdfs_proto::name::WriteEndRequest;
-use rustdfs_proto::name::ReadRequest as NameReadRequest;
 use rustdfs_proto::data::ReadRequest as DataReadRequest;
-use rustdfs_proto::name::block::Node;
+use rustdfs_proto::data::WriteRequest;
 use rustdfs_proto::data::data_node_client::DataNodeClient;
 use rustdfs_proto::data::data_node_server::DataNode;
+use rustdfs_proto::data::write_request::ReplicaNode;
+use rustdfs_proto::name::ReadRequest as NameReadRequest;
+use rustdfs_proto::name::WriteEndRequest;
 use rustdfs_proto::name::WriteStartRequest;
+use rustdfs_proto::name::block::Node;
+use rustdfs_proto::name::name_node_client::NameNodeClient;
 
-use crate::error::RustDFSError;
-use crate::out::OutManager;
-use crate::result::Result;
 use crate::args::{Operation, RustDFSArgs};
+use crate::error::RustDFSError;
 use crate::host::HostAddr;
+use crate::out::OutManager;
 use crate::out::Verbosity;
+use crate::result::Result;
 
 const CHANNEL_SIZE: usize = 8;
 
@@ -39,29 +39,26 @@ pub struct RustDFSClient {
 }
 
 impl RustDFSClient {
-
     pub async fn new(args: RustDFSArgs) -> Result<Self> {
         Ok(RustDFSClient {
             host: HostAddr::from_str(&args.host)?,
             source: args.source,
             dest: args.dest,
-            out: OutManager { verbosity: args.verbosity },
+            out: OutManager {
+                verbosity: args.verbosity,
+            },
         })
     }
 
     pub async fn run(&mut self, op: Operation) -> Result<()> {
         match op {
-            Operation::Write => {
-                match self.write().await {
-                    Ok(_) => Ok(()),
-                    Err(e) => Err(e),
-                }
+            Operation::Write => match self.write().await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
             },
-            Operation::Read => {
-                match self.read().await {
-                    Ok(_) => Ok(()),
-                    Err(e) => Err(e),
-                }
+            Operation::Read => match self.read().await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
             },
         }
     }
@@ -70,7 +67,8 @@ impl RustDFSClient {
         let op_id = Uuid::new_v4().to_string();
         let mut name = name_client(&self.host, &self.out).await?;
         let start_req = write_start_req(&self.source, &self.dest, &op_id).await?;
-        let start_res = name.write_start(start_req)
+        let start_res = name
+            .write_start(start_req)
             .await
             .map_err(RustDFSError::TonicStatusError)?
             .into_inner();
@@ -87,7 +85,8 @@ impl RustDFSClient {
             let out_a = self.out.clone();
             let out_b = self.out.clone();
 
-            let mut out_stream = data.write(in_stream)
+            let mut out_stream = data
+                .write(in_stream)
                 .await
                 .map_err(RustDFSError::TonicStatusError)?
                 .into_inner();
@@ -111,7 +110,7 @@ impl RustDFSClient {
                         match reader.read(&mut buf[..n]).await {
                             Ok(0) => {
                                 break;
-                            },
+                            }
                             Ok(n) => {
                                 sent += n as u64;
 
@@ -121,19 +120,17 @@ impl RustDFSClient {
                                     replicas: to_replica_nodes(&block.nodes[1..]),
                                 };
 
-                                tx.send(req)
-                                    .await
-                                    .map_err(|e| {
-                                        let err = RustDFSError::DataWriteError(e);
-                                        out_a.write_err(&err);
-                                        err
-                                    })?;
-                            },
+                                tx.send(req).await.map_err(|e| {
+                                    let err = RustDFSError::DataWriteError(e);
+                                    out_a.write_err(&err);
+                                    err
+                                })?;
+                            }
                             Err(e) => {
                                 let err = RustDFSError::IoError(e);
                                 out_a.write_err(&err);
                                 return Err(err);
-                            },
+                            }
                         }
                     }
 
@@ -142,7 +139,7 @@ impl RustDFSClient {
                 async move {
                     while let Some(res) = out_stream.next().await {
                         match res {
-                            Ok(_) => {},
+                            Ok(_) => {}
                             Err(e) => {
                                 let err = RustDFSError::TonicStatusError(e);
                                 out_b.write_err(&err);
@@ -157,43 +154,39 @@ impl RustDFSClient {
                 (Err(e), _) | (_, Err(e)) => {
                     err = Some(e);
                     break 'outer;
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
 
         let end_req = write_end_req(&self.dest, &op_id, err.is_none());
-        name.write_end(end_req)
-            .await
-            .map_err(|e| {
-                let err = RustDFSError::TonicStatusError(e);
-                self.out.write_err(&err);
-                err
-            })?;
-        
+        name.write_end(end_req).await.map_err(|e| {
+            let err = RustDFSError::TonicStatusError(e);
+            self.out.write_err(&err);
+            err
+        })?;
+
         match err {
-            Some(e) => {
-                Err(e)
-            },
+            Some(e) => Err(e),
             None => {
                 self.out.write(Verbosity::Info, || {
                     format!("Finished writing file: {}", self.dest)
                 });
                 Ok(())
-            },
+            }
         }
     }
 
     async fn read(&mut self) -> Result<()> {
         let mut name = name_client(&self.host, &self.out).await?;
         let name_req = name_read_req(&self.source);
-        let name_res = name.read(name_req)
+        let name_res = name
+            .read(name_req)
             .await
             .map_err(RustDFSError::TonicStatusError)?
             .into_inner();
 
-        let mut writer = writer(&self.dest, name_res.message_size as usize)
-            .await?;
+        let mut writer = writer(&self.dest, name_res.message_size as usize).await?;
 
         for block in name_res.blocks {
             let node_count = block.nodes.len();
@@ -204,7 +197,8 @@ impl RustDFSClient {
                 let req = data_read_req(&block.block_id, offset);
                 let mut data = data_client(&host).await?;
 
-                let mut stream = data.read(req)
+                let mut stream = data
+                    .read(req)
                     .await
                     .map_err(|e| {
                         let err = RustDFSError::TonicStatusError(e);
@@ -218,22 +212,18 @@ impl RustDFSClient {
                         Ok(msg) => {
                             offset += msg.data.len() as u64;
 
-                            writer.write(&msg.data)
-                                .await
-                                .map_err(|e| {
-                                    let err = RustDFSError::IoError(e);
-                                    self.out.write_err(&err);
-                                    err
-                                })?;
+                            writer.write(&msg.data).await.map_err(|e| {
+                                let err = RustDFSError::IoError(e);
+                                self.out.write_err(&err);
+                                err
+                            })?;
 
-                            writer.flush()
-                                .await
-                                .map_err(|e| {
-                                    let err = RustDFSError::IoError(e);
-                                    self.out.write_err(&err);
-                                    err
-                                })?;
-                        },
+                            writer.flush().await.map_err(|e| {
+                                let err = RustDFSError::IoError(e);
+                                self.out.write_err(&err);
+                                err
+                            })?;
+                        }
                         Err(e) => {
                             if i == node_count - 1 {
                                 let str = format!("Read failed for block {}", block.block_id);
@@ -264,15 +254,12 @@ async fn name_client(host: &HostAddr, out: &OutManager) -> Result<NameNodeClient
     out.write(Verbosity::Info, || {
         format!("Connecting to name node at {}:{}", host.hostname, host.port)
     });
-    
+
     let endpoint = host.to_endpoint()?;
 
     NameNodeClient::connect(endpoint)
         .await
-        .map_err(|e| {
-            
-            RustDFSError::TonicError(e)
-        })
+        .map_err(|e| RustDFSError::TonicError(e))
 }
 
 async fn data_client(host: &HostAddr) -> Result<DataNodeClient<Channel>> {
@@ -280,10 +267,7 @@ async fn data_client(host: &HostAddr) -> Result<DataNodeClient<Channel>> {
 
     DataNodeClient::connect(endpoint)
         .await
-        .map_err(|e| {
-            
-            RustDFSError::TonicError(e)
-        })
+        .map_err(|e| RustDFSError::TonicError(e))
 }
 
 async fn write_start_req(source: &str, dest: &str, id: &str) -> Result<WriteStartRequest> {
@@ -327,7 +311,8 @@ fn to_host_addr(node: &Node) -> HostAddr {
 }
 
 fn to_replica_nodes(nodes: &[Node]) -> Vec<ReplicaNode> {
-    nodes.iter()
+    nodes
+        .iter()
         .map(|n| ReplicaNode {
             host: n.host.clone(),
             port: n.port,
@@ -335,24 +320,14 @@ fn to_replica_nodes(nodes: &[Node]) -> Vec<ReplicaNode> {
         .collect()
 }
 
-async fn reader(
-    fp: &str,
-    size: usize,
-) -> Result<Arc<Mutex<BufReader<File>>>> {
-    let file = File::open(fp)
-        .await
-        .map_err(RustDFSError::IoError)?;
+async fn reader(fp: &str, size: usize) -> Result<Arc<Mutex<BufReader<File>>>> {
+    let file = File::open(fp).await.map_err(RustDFSError::IoError)?;
     let reader = BufReader::with_capacity(size, file);
     Ok(Arc::new(Mutex::new(reader)))
 }
 
-async fn writer(
-    fp: &str,
-    size: usize,
-) -> Result<BufWriter<File>> {
-    let file = File::create(fp)
-        .await
-        .map_err(RustDFSError::IoError)?;
+async fn writer(fp: &str, size: usize) -> Result<BufWriter<File>> {
+    let file = File::create(fp).await.map_err(RustDFSError::IoError)?;
     let writer = BufWriter::with_capacity(size, file);
     Ok(writer)
 }

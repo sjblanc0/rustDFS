@@ -4,17 +4,17 @@ use tonic::transport::Server;
 use tonic::{Request, Response};
 use tonic_health::server as health_server;
 
+use rustdfs_proto::name::name_node_server::NameNode;
+use rustdfs_proto::name::name_node_server::NameNodeServer;
+use rustdfs_proto::name::{
+    Block, ReadRequest, ReadResponse, RegisterRequest, RenewLeaseRequest, RenewLeaseResponse,
+    WriteEndRequest, WriteStartRequest, WriteStartResponse, block::Node,
+};
 use rustdfs_shared::config::RustDFSConfig;
 use rustdfs_shared::conn::DataNodeManager;
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
-use rustdfs_proto::name::name_node_server::NameNode;
-use rustdfs_proto::name::name_node_server::NameNodeServer;
-use rustdfs_proto::name::{
-    ReadRequest, ReadResponse, RegisterRequest, WriteStartRequest, WriteStartResponse, WriteEndRequest, 
-    RenewLeaseRequest, RenewLeaseResponse, Block, block::Node,
-};
 use rustdfs_shared::result::{Result, ServiceResult};
 
 use crate::args::RustDFSArgs;
@@ -61,24 +61,32 @@ impl NameNode for NameNodeService {
     ) -> ServiceResult<Response<WriteStartResponse>> {
         let req = request.into_inner();
 
-        let (desc, expire) = self.file_mgr
-            .init_write(&req.operation_id, &req.file_name, req.file_size, &self.data_nodes)
+        let (desc, expire) = self
+            .file_mgr
+            .init_write(
+                &req.operation_id,
+                &req.file_name,
+                req.file_size,
+                &self.data_nodes,
+            )
             .await?;
 
         self.log_mgr.write(LogLevel::Info, || {
             format!("Starting write for file {}", req.file_name)
         });
 
-        let res = WriteStartResponse { 
+        let res = WriteStartResponse {
             file_name: req.file_name.clone(),
             expire,
             message_size: self.message_size as u64,
-            blocks: desc.blocks
+            blocks: desc
+                .blocks
                 .iter()
                 .map(|b| Block {
                     block_id: b.id.clone(),
                     block_size: b.size,
-                    nodes: b.nodes
+                    nodes: b
+                        .nodes
                         .iter()
                         .map(|h| Node {
                             host: h.hostname.clone(),
@@ -88,14 +96,11 @@ impl NameNode for NameNodeService {
                 })
                 .collect(),
         };
-        
+
         Ok(Response::new(res))
     }
 
-    async fn write_end(
-        &self,
-        request: Request<WriteEndRequest>,
-    ) -> ServiceResult<Response<()>> {
+    async fn write_end(&self, request: Request<WriteEndRequest>) -> ServiceResult<Response<()>> {
         let req = request.into_inner();
 
         self.file_mgr
@@ -110,7 +115,8 @@ impl NameNode for NameNodeService {
         request: Request<RenewLeaseRequest>,
     ) -> ServiceResult<Response<RenewLeaseResponse>> {
         let req = request.into_inner();
-        let expire = self.file_mgr
+        let expire = self
+            .file_mgr
             .renew_lease(&req.file_name, &req.operation_id)
             .await?;
 
@@ -118,7 +124,10 @@ impl NameNode for NameNodeService {
             format!("Renewed lease for file {}", req.file_name)
         });
 
-        Ok(Response::new(RenewLeaseResponse { file_name: req.file_name, expire }))
+        Ok(Response::new(RenewLeaseResponse {
+            file_name: req.file_name,
+            expire,
+        }))
     }
 
     /**
@@ -129,14 +138,9 @@ impl NameNode for NameNodeService {
      *  @param request - NameReadRequest containing file name.
      *  @return Result<Response<ReadStream>> - Response streaming file data or error.
      */
-    async fn read(
-        &self, 
-        request: Request<ReadRequest>,
-    ) -> ServiceResult<Response<ReadResponse>> {
+    async fn read(&self, request: Request<ReadRequest>) -> ServiceResult<Response<ReadResponse>> {
         let req = request.into_inner();
-        let desc = self.file_mgr
-            .read(&req.file_name)
-            .await?;
+        let desc = self.file_mgr.read(&req.file_name).await?;
 
         self.log_mgr.write(LogLevel::Info, || {
             format!("Providing file descriptor for read: {}", &req.file_name)
@@ -145,20 +149,22 @@ impl NameNode for NameNodeService {
         let res = ReadResponse {
             file_name: req.file_name,
             message_size: self.message_size as u64,
-            blocks: desc.blocks
+            blocks: desc
+                .blocks
                 .iter()
                 .map(|b| Block {
                     block_id: b.id.clone(),
                     block_size: b.size,
                     nodes: {
-                        let mut nodes = b.nodes
+                        let mut nodes = b
+                            .nodes
                             .iter()
                             .map(|h| Node {
                                 host: h.hostname.clone(),
                                 port: h.port as u32,
                             })
                             .collect::<Vec<_>>();
-                        
+
                         // just shuffle the nodes
                         // in actuality HDFS would try to read from the
                         // nearest node first
@@ -179,10 +185,7 @@ impl NameNode for NameNodeService {
      *  @param request - NameRegisterRequest containing data node host and port.
      *  @return Result<Response<()>> - Response indicating success or failure.
      */
-    async fn register(
-        &self, 
-        request: Request<RegisterRequest>,
-    ) -> ServiceResult<Response<()>> {
+    async fn register(&self, request: Request<RegisterRequest>) -> ServiceResult<Response<()>> {
         let req = request.into_inner();
 
         self.data_nodes.add_conn(&req.host, req.port as u16).await?;

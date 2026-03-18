@@ -1,8 +1,8 @@
 use std::fmt::{Display, Formatter};
-use tonic::Status;
-use tonic::transport::Error as TonicError;
 use std::io::Error as IoError;
 use tokio::sync::mpsc::error::SendError;
+use tonic::Status;
+use tonic::transport::Error as TonicError;
 
 use rustdfs_proto::data::WriteRequest as DataWriteRequest;
 

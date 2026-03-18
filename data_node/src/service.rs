@@ -1,35 +1,35 @@
-use futures::future::TryFutureExt;
-use rustdfs_proto::data::write_request::ReplicaNode;
-use tokio::sync::mpsc::error::SendError;
-use tokio::task::{JoinError, JoinSet};
 use futures::FutureExt;
-use tokio_stream::wrappers::ReceiverStream;
-use std::pin::Pin;
+use futures::future::TryFutureExt;
+use futures::stream::Stream;
+use rustdfs_proto::data::write_request::ReplicaNode;
+use std::io::Write;
 use std::io::{Error as IoError, Read};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::vec;
-use tokio::sync::mpsc::{self};
-use tokio_stream::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::join;
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::{self};
+use tokio::task::{JoinError, JoinSet};
 use tokio_retry2::strategy::{ExponentialBackoff, MaxInterval, jitter};
 use tokio_retry2::{Retry, RetryError};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::Streaming;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use tonic_health::server::{self as health_server, HealthReporter};
-use tonic::Streaming;
-use tokio::join;
-use std::io::Write;
-use futures::stream::Stream;
 
+use rustdfs_proto::data::data_node_server::{DataNode, DataNodeServer};
+use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
+use rustdfs_proto::name::RegisterRequest;
+use rustdfs_proto::name::name_node_client::NameNodeClient;
 use rustdfs_shared::config::RustDFSConfig;
 use rustdfs_shared::conn::DataNodeManager;
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
-use rustdfs_proto::data::data_node_server::{DataNode, DataNodeServer};
-use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
-use rustdfs_proto::name::name_node_client::NameNodeClient;
-use rustdfs_proto::name::RegisterRequest;
 use rustdfs_shared::result::{Result, ServiceResult};
 
 use crate::args::RustDFSArgs;
@@ -63,7 +63,6 @@ pub struct DataNodeService {
 
 #[tonic::async_trait]
 impl DataNode for DataNodeService {
-
     type WriteStream = WriteStream;
     type ReadStream = ReadStream;
 
@@ -76,7 +75,7 @@ impl DataNode for DataNodeService {
      *  @return Result<Response<()>> - Response indicating success or failure.
      */
     async fn write(
-        &self, 
+        &self,
         request: Request<Streaming<WriteRequest>>,
     ) -> ServiceResult<Response<WriteStream>> {
         let msg_size = self.message_size;
@@ -99,33 +98,25 @@ impl DataNode for DataNodeService {
             while let Some(res) = req_stream.next().await {
                 match res {
                     Ok(req) => {
-                        let mut writer = block_mgr
-                            .write_buf(&req.block_id, msg_size)
-                            .await?;
+                        let mut writer = block_mgr.write_buf(&req.block_id, msg_size).await?;
 
-                        writer.write(&req.data)
-                            .await
-                            .map_err(status_err_writing)?;
+                        writer.write(&req.data).await.map_err(status_err_writing)?;
 
-                        writer.flush()
-                            .await
-                            .map_err(status_err_writing)?;
-                        
+                        writer.flush().await.map_err(status_err_writing)?;
+
                         match req.replicas.len() {
                             0 => {
                                 if !tx_init_a.is_closed() {
-                                    tx_init_a.send(None)
+                                    tx_init_a
+                                        .send(None)
                                         .await
-                                        .map_err(|e| {
-                                            status_err_internal_channel(e)
-                                        })?;
+                                        .map_err(|e| status_err_internal_channel(e))?;
                                 }
 
-                                tx_client_a.send(Ok(()))
+                                tx_client_a
+                                    .send(Ok(()))
                                     .await
-                                    .map_err(|e| {
-                                        status_err_sending_client(e)
-                                    })?;
+                                    .map_err(|e| status_err_sending_client(e))?;
                             }
                             _ => {
                                 let repl = WriteRequest {
@@ -135,22 +126,20 @@ impl DataNode for DataNodeService {
                                 };
 
                                 if !tx_init_a.is_closed() {
-                                    tx_init_a.send(Some(req.replicas[0].clone()))
+                                    tx_init_a
+                                        .send(Some(req.replicas[0].clone()))
                                         .await
-                                        .map_err(|e| {
-                                            status_err_internal_channel(e)
-                                        })?;
+                                        .map_err(|e| status_err_internal_channel(e))?;
                                 }
 
-                                tx_repl.send(repl)
+                                tx_repl
+                                    .send(repl)
                                     .await
-                                    .map_err(|err| {
-                                        status_err_forwarding(err)
-                                    })?;
+                                    .map_err(|err| status_err_forwarding(err))?;
                             }
                         }
                     }
-                    Err(err) => { 
+                    Err(err) => {
                         return Err(err);
                     }
                 }
@@ -163,16 +152,14 @@ impl DataNode for DataNodeService {
             drop(tx_init_b);
 
             let repl = match rx_init.recv().await {
-                Some(opt) => {
-                    match opt {
-                        Some(repl) => {
-                            drop(rx_init);
-                            repl
-                        },
-                        None => {
-                            drop(rx_init);
-                            return Ok(());
-                        }
+                Some(opt) => match opt {
+                    Some(repl) => {
+                        drop(rx_init);
+                        repl
+                    }
+                    None => {
+                        drop(rx_init);
+                        return Ok(());
                     }
                 },
                 None => {
@@ -182,32 +169,22 @@ impl DataNode for DataNodeService {
             };
 
             if !data_nodes.has_conn(&repl.host).await {
-                data_nodes
-                    .add_conn(&repl.host, repl.port as u16)
-                    .await?;
+                data_nodes.add_conn(&repl.host, repl.port as u16).await?;
             }
 
-            let conn = data_nodes
-                .get_conn(&repl.host)
-                .await?;
-            let mut repl_stream = conn
-                .write(ReceiverStream::new(rx_repl))
-                .await?;
+            let conn = data_nodes.get_conn(&repl.host).await?;
+            let mut repl_stream = conn.write(ReceiverStream::new(rx_repl)).await?;
 
             while let Some(next) = repl_stream.next().await {
                 match next {
                     Ok(_) => {
-                    tx_client_b
-                        .send(Ok(()))
-                        .await
-                        .map_err(|e| {
-                                status_err_sending_client(e)
-                            })?;
+                        tx_client_b
+                            .send(Ok(()))
+                            .await
+                            .map_err(|e| status_err_sending_client(e))?;
                     }
                     Err(err) => {
-                        let _ = tx_client_b
-                            .send(Err(err.clone()))
-                            .await;
+                        let _ = tx_client_b.send(Err(err.clone())).await;
                         return Err(err);
                     }
                 }
@@ -222,7 +199,7 @@ impl DataNode for DataNodeService {
             while let Some(res) = tasks.join_next().await {
                 match res {
                     Ok(res) => match res {
-                        Ok(_) => {},
+                        Ok(_) => {}
                         Err(err) => {
                             tasks.shutdown().await;
 
@@ -232,7 +209,7 @@ impl DataNode for DataNodeService {
 
                             break;
                         }
-                    }
+                    },
                     Err(err) => {
                         tasks.shutdown().await;
 
@@ -258,10 +235,7 @@ impl DataNode for DataNodeService {
      *  @param request - DataReadRequest containing block ID.
      *  @return Result<Response<DataReadResponse>> - Response containing data block or error.
      */
-    async fn read(
-        &self,
-        request: Request<ReadRequest>,
-    ) -> ServiceResult<Response<ReadStream>> {
+    async fn read(&self, request: Request<ReadRequest>) -> ServiceResult<Response<ReadStream>> {
         let req = request.into_inner();
         let (tx, rx) = mpsc::channel(8);
         let out = ReceiverStream::new(rx);
@@ -273,14 +247,12 @@ impl DataNode for DataNodeService {
 
         tokio::spawn(async move {
             let mut reader = match data_mgr.read_buf(&req.block_id, msg_size, req.offset).await {
-                Ok(reader) => {
-                    reader
-                },
+                Ok(reader) => reader,
                 Err(e) => {
                     logger.write_status(&e);
                     let _ = tx.send(Err(e.clone())).await;
                     return Err(e);
-                },
+                }
             };
 
             loop {
@@ -290,20 +262,18 @@ impl DataNode for DataNodeService {
                             format!("Completed read for block {}", req.block_id)
                         });
                         break;
-                    },
+                    }
                     Ok(n @ 1..) => {
                         let res = ReadResponse {
                             block_id: req.block_id.clone(),
                             data: buf[..n].to_vec(),
                         };
 
-                        tx.send(Ok(res))
-                            .await
-                            .map_err(|e| {
-                                let err = status_err_sending_client(e);
-                                logger.write_status(&err);
-                                err
-                            })?;
+                        tx.send(Ok(res)).await.map_err(|e| {
+                            let err = status_err_sending_client(e);
+                            logger.write_status(&err);
+                            err
+                        })?;
                     }
                     Err(e) => {
                         let err = status_err_reading(&req.block_id, e);
@@ -317,7 +287,6 @@ impl DataNode for DataNodeService {
             Ok::<(), Status>(())
         });
 
-        
         Ok(Response::new(Box::pin(out) as Self::ReadStream))
     }
 }

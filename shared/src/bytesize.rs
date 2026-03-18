@@ -1,5 +1,5 @@
-use serde::{Deserialize, Deserializer};
 use serde::de::Error as SerdeError;
+use serde::{Deserialize, Deserializer};
 use std::result::Result as StdResult;
 
 use crate::error::RustDFSError;
@@ -26,8 +26,7 @@ impl<'de> Deserialize<'de> for ByteSize {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        parse_byte_size(&s)
-            .map_err(SerdeError::custom)
+        parse_byte_size(&s).map_err(SerdeError::custom)
     }
 }
 
@@ -35,13 +34,12 @@ fn parse_byte_size(s: &str) -> Result<ByteSize> {
     let s = s.trim();
 
     let (num_part, suffix) = match s.find(|c: char| c.is_alphabetic()) {
-        Some(i) => {
-            (&s[..i], s[i..].to_uppercase())
-        },
+        Some(i) => (&s[..i], s[i..].to_uppercase()),
         None => {
-            return s.parse::<usize>()
+            return s
+                .parse::<usize>()
                 .map(ByteSize)
-                .map_err(|_| err_invalid_byte_size(s))
+                .map_err(|_| err_invalid_byte_size(s));
         }
     };
 
@@ -58,7 +56,7 @@ fn parse_byte_size(s: &str) -> Result<ByteSize> {
         _ => {
             let err = err_invalid_suffix_byte_size(&suffix);
             return Err(err);
-        },
+        }
     };
 
     Ok(ByteSize(num * multiplier))
@@ -77,6 +75,9 @@ fn err_invalid_num_byte_size(size_str: &str) -> RustDFSError {
 }
 
 fn err_invalid_suffix_byte_size(suffix: &str) -> RustDFSError {
-    let str = format!("Invalid suffix '{}' in byte size. Expected: B, KB, MB, GB.", suffix);
+    let str = format!(
+        "Invalid suffix '{}' in byte size. Expected: B, KB, MB, GB.",
+        suffix
+    );
     RustDFSError::CustomError(str)
 }

@@ -1,8 +1,8 @@
 use std::fs::{self};
-use std::io::{Error as IoError};
+use std::io::Error as IoError;
 use std::path::Path;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{BufReader, BufWriter, SeekFrom, AsyncSeekExt};
+use tokio::io::{AsyncSeekExt, BufReader, BufWriter, SeekFrom};
 
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::logging::LogManager;
@@ -50,7 +50,7 @@ impl BlockManager {
     }
 
     pub async fn read_buf(
-        &self, 
+        &self,
         path: &str,
         buf_size: usize,
         offset: u64,
@@ -65,14 +65,12 @@ impl BlockManager {
                 self.log_mgr.write_status(&err);
                 err
             })?;
-        
-        file.seek(SeekFrom::Start(offset))
-            .await
-            .map_err(|e| {
-                let err = status_err_reading(path, e);
-                self.log_mgr.write_status(&err);
-                err
-            })?;
+
+        file.seek(SeekFrom::Start(offset)).await.map_err(|e| {
+            let err = status_err_reading(path, e);
+            self.log_mgr.write_status(&err);
+            err
+        })?;
 
         Ok(BufReader::with_capacity(buf_size, file))
     }

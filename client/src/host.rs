@@ -23,34 +23,27 @@ impl HostAddr {
         }
 
         let hostname = parts[0].to_string();
-        let port = parts[1].parse::<u16>()
-            .map_err(|_| {
-                err_invalid_port(host_str)
-            })?;
+        let port = parts[1]
+            .parse::<u16>()
+            .map_err(|_| err_invalid_port(host_str))?;
 
         Ok(HostAddr { hostname, port })
     }
 
     pub fn to_endpoint(&self) -> Result<Endpoint> {
         let addr_str = format!("{}:{}", self.hostname, self.port);
-        let mut addrs_iter = addr_str.to_socket_addrs()
-            .map_err(|e| {
-                
-                err_not_resolve(&self.hostname, self.port, Some(e))
-            })?;
+        let mut addrs_iter = addr_str
+            .to_socket_addrs()
+            .map_err(|e| err_not_resolve(&self.hostname, self.port, Some(e)))?;
 
-        let addr = addrs_iter.next()
-            .ok_or_else(|| {
-                type R = RustDFSError;
-                
-                err_not_resolve::<R>(&self.hostname, self.port, None)
-            })?;
+        let addr = addrs_iter.next().ok_or_else(|| {
+            type R = RustDFSError;
+
+            err_not_resolve::<R>(&self.hostname, self.port, None)
+        })?;
 
         Endpoint::from_shared(format!("{}{}", HTTP_PREFIX, addr))
-            .map_err(|e| {
-                
-                err_not_resolve(&self.hostname, self.port, Some(e))
-            })
+            .map_err(|e| err_not_resolve(&self.hostname, self.port, Some(e)))
     }
 }
 

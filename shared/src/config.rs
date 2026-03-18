@@ -1,6 +1,6 @@
+use serde::Deserialize;
 use std::fs::File;
 use std::io::Read;
-use serde::Deserialize;
 use toml;
 
 use crate::bytesize::ByteSize;
@@ -8,7 +8,7 @@ use crate::error::RustDFSError;
 use crate::result::Result;
 
 const CONFIG_FILE_GLOBAL: &str = "/etc/rustdfs/rdfsconf.toml";
-const LEASE_DURATION_GLOBAL: u32 =  120;
+const LEASE_DURATION_GLOBAL: u32 = 120;
 const LOG_FILE_GLOBAL: &str = "/var/log/rustdfs";
 const DATA_DIR_GLOBAL: &str = "/var/lib/rustdfs/data";
 
@@ -40,13 +40,13 @@ pub struct RustDFSConfig {
     #[serde(rename = "replica-count", default)]
     pub replica_count: u32,
 
-    #[serde(rename = "lease-duration", default="default_lease_duration")]
+    #[serde(rename = "lease-duration", default = "default_lease_duration")]
     pub lease_duration: u32,
 
-    #[serde(rename = "message-size", default="default_message_size")]
+    #[serde(rename = "message-size", default = "default_message_size")]
     pub message_size: ByteSize,
 
-    #[serde(rename = "block-size", default="default_block_size")]
+    #[serde(rename = "block-size", default = "default_block_size")]
     pub block_size: ByteSize,
 
     #[serde(rename = "name-node")]
@@ -124,11 +124,11 @@ impl RustDFSConfig {
 // Default fields
 
 fn default_message_size() -> ByteSize {
-    ByteSize(1024 * 64)  // 64 KB
+    ByteSize(1024 * 64) // 64 KB
 }
 
 fn default_block_size() -> ByteSize {
-    ByteSize(1024 * 1024 * 32)  // 32 MB
+    ByteSize(1024 * 1024 * 32) // 32 MB
 }
 
 fn default_lease_duration() -> u32 {

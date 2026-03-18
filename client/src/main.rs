@@ -1,9 +1,9 @@
 mod args;
 mod client;
-mod host;
 mod error;
-mod result;
+mod host;
 mod out;
+mod result;
 
 use args::RustDFSArgs;
 use client::RustDFSClient;

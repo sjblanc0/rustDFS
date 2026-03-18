@@ -1,15 +1,15 @@
+use futures::future::FutureExt;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tonic::{IntoStreamingRequest, Status};
-use tonic::transport::Channel;
 use tonic::Streaming;
-use futures::future::FutureExt;
+use tonic::transport::Channel;
+use tonic::{IntoStreamingRequest, Status};
 
-use rustdfs_proto::data::data_node_client::DataNodeClient;
-use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
 use crate::host::HostAddr;
 use crate::logging::{LogLevel, LogManager};
 use crate::result::ServiceResult;
+use rustdfs_proto::data::data_node_client::DataNodeClient;
+use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
 
 /**
  * Manages data node connections for RustDFS.
@@ -139,10 +139,12 @@ impl DataNodeConn {
      *  @return ServiceResult<()> - Result indicating success or failure.
      */
     pub async fn write(
-        self, 
+        self,
         request: impl IntoStreamingRequest<Message = WriteRequest>,
     ) -> ServiceResult<Streaming<()>> {
-        let stream = self.client.clone()
+        let stream = self
+            .client
+            .clone()
             .write(request)
             .map(|res| match res {
                 Ok(response) => Ok(response.into_inner()),
@@ -159,10 +161,7 @@ impl DataNodeConn {
      *  @param request - DataReadRequest containing block ID.
      *  @return ServiceResult<DataReadResponse> - Result containing the read data or an error.
      */
-    pub async fn read(
-        self, 
-        request: ReadRequest
-    ) -> ServiceResult<Streaming<ReadResponse>> {
+    pub async fn read(self, request: ReadRequest) -> ServiceResult<Streaming<ReadResponse>> {
         let response = self.client.clone().read(request).await?;
         Ok(response.into_inner())
     }
