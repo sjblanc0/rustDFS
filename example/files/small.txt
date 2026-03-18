@@ -46,10 +46,266 @@ This file is used as test content for the example Docker Compose
 deployment. The content is intentionally ASCII so diffs are readable
 if an integrity check fails after a round-trip write and read.
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do
-eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim
-ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut
-aliquip ex ea commodo consequat. Duis aute irure dolor in
-reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla
-pariatur. Excepteur sint occaecat cupidatat non proident, sunt in
-culpa qui officia deserunt mollit anim id est laborum.
+rustDFS is a distributed file system written in Rust, inspired by HDFS.
+It splits files into fixed-size blocks and replicates them across
+multiple data nodes for fault tolerance. A name node manages the
+file namespace---tracking which blocks belong to each file and which
+data nodes store each block.
+
+Write path:
+  1. The client sends a WriteStartRequest to the name node with the
+     file name, file size, and a unique operation ID.
+  2. The name node computes the number of blocks (file size / block
+     size, rounded up), assigns each a UUID, and randomly selects a
+     primary data node plus replica nodes from the registered pool.
+     It returns the block assignments and a time-limited write lease.
+  3. For each block, the client opens a streaming gRPC connection
+     directly to the primary data node and sends WriteRequest messages
+     containing the block ID, a data chunk, and the list of replica
+     nodes in the replication chain.
+  4. The primary data node writes each chunk to local disk and
+     forwards it to the next replica in the chain. Each replica
+     repeats this process until the chain is exhausted.
+  5. Per-chunk acknowledgements flow back through the chain to the
+     client. The client sends and receives concurrently using
+     tokio::join on the input and output halves of the stream.
+  6. After all blocks are written the client calls WriteEnd to
+     finalize the file and release the lease.
+
+Read path:
+  1. The client sends a ReadRequest to the name node with the file
+     name.
+  2. The name node looks up the latest completed file descriptor and
+     returns block metadata: block IDs, sizes, and a shuffled list
+     of replica nodes for each block.
+  3. For each block the client connects directly to a data node and
+     streams ReadResponse messages containing data chunks.
+  4. If a data node fails mid-stream the client retries on the next
+     replica, resuming from the byte offset where it left off.
+  5. Received chunks are written sequentially to a local file.
+
+Configuration is loaded from a shared TOML file (rdfsconf.toml).
+Key settings include replica-count, message-size (max gRPC streaming
+chunk), and block-size (max bytes per block). Data nodes register
+themselves with the name node on startup using exponential-backoff
+retries.
+
+This file is used as test content for the example Docker Compose
+deployment. The content is intentionally ASCII so diffs are readable
+if an integrity check fails after a round-trip write and read.
+
+rustDFS is a distributed file system written in Rust, inspired by HDFS.
+It splits files into fixed-size blocks and replicates them across
+multiple data nodes for fault tolerance. A name node manages the
+file namespace---tracking which blocks belong to each file and which
+data nodes store each block.
+
+Write path:
+  1. The client sends a WriteStartRequest to the name node with the
+     file name, file size, and a unique operation ID.
+  2. The name node computes the number of blocks (file size / block
+     size, rounded up), assigns each a UUID, and randomly selects a
+     primary data node plus replica nodes from the registered pool.
+     It returns the block assignments and a time-limited write lease.
+  3. For each block, the client opens a streaming gRPC connection
+     directly to the primary data node and sends WriteRequest messages
+     containing the block ID, a data chunk, and the list of replica
+     nodes in the replication chain.
+  4. The primary data node writes each chunk to local disk and
+     forwards it to the next replica in the chain. Each replica
+     repeats this process until the chain is exhausted.
+  5. Per-chunk acknowledgements flow back through the chain to the
+     client. The client sends and receives concurrently using
+     tokio::join on the input and output halves of the stream.
+  6. After all blocks are written the client calls WriteEnd to
+     finalize the file and release the lease.
+
+Read path:
+  1. The client sends a ReadRequest to the name node with the file
+     name.
+  2. The name node looks up the latest completed file descriptor and
+     returns block metadata: block IDs, sizes, and a shuffled list
+     of replica nodes for each block.
+  3. For each block the client connects directly to a data node and
+     streams ReadResponse messages containing data chunks.
+  4. If a data node fails mid-stream the client retries on the next
+     replica, resuming from the byte offset where it left off.
+  5. Received chunks are written sequentially to a local file.
+
+Configuration is loaded from a shared TOML file (rdfsconf.toml).
+Key settings include replica-count, message-size (max gRPC streaming
+chunk), and block-size (max bytes per block). Data nodes register
+themselves with the name node on startup using exponential-backoff
+retries.
+
+This file is used as test content for the example Docker Compose
+deployment. The content is intentionally ASCII so diffs are readable
+if an integrity check fails after a round-trip write and read.
+
+rustDFS is a distributed file system written in Rust, inspired by HDFS.
+It splits files into fixed-size blocks and replicates them across
+multiple data nodes for fault tolerance. A name node manages the
+file namespace---tracking which blocks belong to each file and which
+data nodes store each block.
+
+Write path:
+  1. The client sends a WriteStartRequest to the name node with the
+     file name, file size, and a unique operation ID.
+  2. The name node computes the number of blocks (file size / block
+     size, rounded up), assigns each a UUID, and randomly selects a
+     primary data node plus replica nodes from the registered pool.
+     It returns the block assignments and a time-limited write lease.
+  3. For each block, the client opens a streaming gRPC connection
+     directly to the primary data node and sends WriteRequest messages
+     containing the block ID, a data chunk, and the list of replica
+     nodes in the replication chain.
+  4. The primary data node writes each chunk to local disk and
+     forwards it to the next replica in the chain. Each replica
+     repeats this process until the chain is exhausted.
+  5. Per-chunk acknowledgements flow back through the chain to the
+     client. The client sends and receives concurrently using
+     tokio::join on the input and output halves of the stream.
+  6. After all blocks are written the client calls WriteEnd to
+     finalize the file and release the lease.
+
+Read path:
+  1. The client sends a ReadRequest to the name node with the file
+     name.
+  2. The name node looks up the latest completed file descriptor and
+     returns block metadata: block IDs, sizes, and a shuffled list
+     of replica nodes for each block.
+  3. For each block the client connects directly to a data node and
+     streams ReadResponse messages containing data chunks.
+  4. If a data node fails mid-stream the client retries on the next
+     replica, resuming from the byte offset where it left off.
+  5. Received chunks are written sequentially to a local file.
+
+Configuration is loaded from a shared TOML file (rdfsconf.toml).
+Key settings include replica-count, message-size (max gRPC streaming
+chunk), and block-size (max bytes per block). Data nodes register
+themselves with the name node on startup using exponential-backoff
+retries.
+
+This file is used as test content for the example Docker Compose
+deployment. The content is intentionally ASCII so diffs are readable
+if an integrity check fails after a round-trip write and read.
+
+rustDFS is a distributed file system written in Rust, inspired by HDFS.
+It splits files into fixed-size blocks and replicates them across
+multiple data nodes for fault tolerance. A name node manages the
+file namespace---tracking which blocks belong to each file and which
+data nodes store each block.
+
+Write path:
+  1. The client sends a WriteStartRequest to the name node with the
+     file name, file size, and a unique operation ID.
+  2. The name node computes the number of blocks (file size / block
+     size, rounded up), assigns each a UUID, and randomly selects a
+     primary data node plus replica nodes from the registered pool.
+     It returns the block assignments and a time-limited write lease.
+  3. For each block, the client opens a streaming gRPC connection
+     directly to the primary data node and sends WriteRequest messages
+     containing the block ID, a data chunk, and the list of replica
+     nodes in the replication chain.
+  4. The primary data node writes each chunk to local disk and
+     forwards it to the next replica in the chain. Each replica
+     repeats this process until the chain is exhausted.
+  5. Per-chunk acknowledgements flow back through the chain to the
+     client. The client sends and receives concurrently using
+     tokio::join on the input and output halves of the stream.
+  6. After all blocks are written the client calls WriteEnd to
+     finalize the file and release the lease.
+
+Read path:
+  1. The client sends a ReadRequest to the name node with the file
+     name.
+  2. The name node looks up the latest completed file descriptor and
+     returns block metadata: block IDs, sizes, and a shuffled list
+     of replica nodes for each block.
+  3. For each block the client connects directly to a data node and
+     streams ReadResponse messages containing data chunks.
+  4. If a data node fails mid-stream the client retries on the next
+     replica, resuming from the byte offset where it left off.
+  5. Received chunks are written sequentially to a local file.
+
+Configuration is loaded from a shared TOML file (rdfsconf.toml).
+Key settings include replica-count, message-size (max gRPC streaming
+chunk), and block-size (max bytes per block). Data nodes register
+themselves with the name node on startup using exponential-backoff
+retries.
+
+This file is used as test content for the example Docker Compose
+deployment. The content is intentionally ASCII so diffs are readable
+if an integrity check fails after a round-trip write and read.
+
+rustDFS is a distributed file system written in Rust, inspired by HDFS.
+It splits files into fixed-size blocks and replicates them across
+multiple data nodes for fault tolerance. A name node manages the
+file namespace---tracking which blocks belong to each file and which
+data nodes store each block.
+
+Write path:
+  1. The client sends a WriteStartRequest to the name node with the
+     file name, file size, and a unique operation ID.
+  2. The name node computes the number of blocks (file size / block
+     size, rounded up), assigns each a UUID, and randomly selects a
+     primary data node plus replica nodes from the registered pool.
+     It returns the block assignments and a time-limited write lease.
+  3. For each block, the client opens a streaming gRPC connection
+     directly to the primary data node and sends WriteRequest messages
+     containing the block ID, a data chunk, and the list of replica
+     nodes in the replication chain.
+  4. The primary data node writes each chunk to local disk and
+     forwards it to the next replica in the chain. Each replica
+     repeats this process until the chain is exhausted.
+  5. Per-chunk acknowledgements flow back through the chain to the
+     client. The client sends and receives concurrently using
+     tokio::join on the input and output halves of the stream.
+  6. After all blocks are written the client calls WriteEnd to
+     finalize the file and release the lease.
+
+Read path:
+  1. The client sends a ReadRequest to the name node with the file
+     name.
+  2. The name node looks up the latest completed file descriptor and
+     returns block metadata: block IDs, sizes, and a shuffled list
+     of replica nodes for each block.
+  3. For each block the client connects directly to a data node and
+     streams ReadResponse messages containing data chunks.
+  4. If a data node fails mid-stream the client retries on the next
+     replica, resuming from the byte offset where it left off.
+  5. Received chunks are written sequentially to a local file.
+
+Configuration is loaded from a shared TOML file (rdfsconf.toml).
+Key settings include replica-count, message-size (max gRPC streaming
+chunk), and block-size (max bytes per block). Data nodes register
+themselves with the name node on startup using exponential-backoff
+retries.
+
+This file is used as test content for the example Docker Compose
+deployment. The content is intentionally ASCII so diffs are readable
+if an integrity check fails after a round-trip write and read.
+
+rustDFS is a distributed file system written in Rust, inspired by HDFS.
+It splits files into fixed-size blocks and replicates them across
+multiple data nodes for fault tolerance. A name node manages the
+file namespace---tracking which blocks belong to each file and which
+data nodes store each block.
+
+Write path:
+  1. The client sends a WriteStartRequest to the name node with the
+     file name, file size, and a unique operation ID.
+  2. The name node computes the number of blocks (file size / block
+     size, rounded up), assigns each a UUID, and randomly selects a
+     primary data node plus replica nodes from the registered pool.
+     It returns the block assignments and a time-limited write lease.
+  3. For each block, the client opens a streaming gRPC connection
+     directly to the primary data node and sends WriteRequest messages
+     containing the block ID, a data chunk, and the list of replica
+     nodes in the replication chain.
+  4. The primary data node writes each chunk to local disk and
+     forwards it to the next replica in the chain. Each replica
+     repeats this process until the chain is exhausted.
+  5. Per-chunk acknowledgements flow back through the chain to the
+     client. The client sends and receives concurrently using
+     tokio::join on 

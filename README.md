@@ -62,7 +62,7 @@ Binaries are placed in `target/release/`:
 
 ## Configuration
 
-All nodes read a shared TOML configuration file (default: `/etc/rustdfs/rdfsconf.toml`). See [example/rdfsconf.toml](example/rdfsconf.toml) for a full example.
+All nodes read a shared TOML configuration file (default: `/etc/rustdfs/rdfsconf.toml`). See [example/basic/rdfsconf.toml](example/basic/rdfsconf.toml) for a full example.
 
 | Key | Default | Description |
 |---|---|---|
@@ -124,14 +124,19 @@ GitHub Actions runs three checks on every change to `main`:
 
 ## Running with Docker Compose
 
-The `example/` directory contains a ready-to-run demo with Docker Compose that spins up 3 data nodes, 1 name node, and a client container.
+The `example/` directory contains two ready-to-run demos:
+
+| Example | Description |
+|---|---|
+| [`example/basic`](example/basic/) | Write + read verification (small and large files) |
+| [`example/leasing`](example/leasing/) | Write-lease conflict and read-during-overwrite tests |
+
+Each has its own `docker-compose.yml` that spins up 3 data nodes, 1 name node, and a client container:
 
 ```bash
-cd example
+cd example/basic
 docker compose up --build
 ```
-
-The demo writes `small.txt` and `large.txt` into the cluster, reads them back, and diffs the results to verify data integrity.
 
 ## Project Layout
 
@@ -145,9 +150,15 @@ rustDFS/
 │   └── proto/
 │       ├── name_node.proto
 │       └── data_node.proto
-└── example/         # Docker Compose demo
-    ├── docker-compose.yml
-    ├── rdfsconf.toml
-    ├── client.sh
-    └── files/       # Sample test files (small.txt, large.txt)
+└── example/         # Docker Compose demos
+    ├── basic/       # Read / write verification
+    │   ├── docker-compose.yml
+    │   ├── rdfsconf.toml
+    │   ├── client.sh
+    │   └── files/
+    └── leasing/     # Lease conflict & concurrent read tests
+        ├── docker-compose.yml
+        ├── rdfsconf.toml
+        ├── client.sh
+        └── files/
 ```

@@ -4,9 +4,6 @@
  - implement inodes / directory structure
  - support rebalancing data
  - daemonize client
- - stream data directly between client <-> data node like actual HDFS
- - use async reads in Data Node
  - add validation for block / message size
  - checks for unused packages
- - handle lease on client
  
