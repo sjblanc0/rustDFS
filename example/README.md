@@ -45,7 +45,7 @@ If all diffs pass, you'll see:
 ============================================
 ```
 
-The `small.txt` file demonstrates a single-block transfer, and `large.txt` demonstrates a 5-block transfer. Name / data node console output is also visible from the Docker Compose orchestrator. 
+The `small.txt` file (~3 KB) demonstrates a single-block transfer, and `large.txt` (10 MB) demonstrates a 3-block transfer (with a 4 MB block size). Name / data node console output is also visible from the Docker Compose orchestrator.
 
 ## Configuration
 
@@ -53,6 +53,8 @@ The cluster configuration lives in `rdfsconf.toml`. All data nodes share the sam
 
 ```toml
 replica-count = 2
+message-size = "16KB"
+block-size = "4MB"
 
 [name-node]
 host = "namenode"
@@ -64,7 +66,13 @@ data-dir = "/var/lib/rustdfs/data"
 log-file = "/var/log/rustdfs/datanode.log"
 ```
 
-To modify the cluster (e.g., change the replication factor or add / remove data nodes), edit `rdfsconf.toml` and update `docker-compose.yml` accordingly.
+| Key | Description |
+|---|---|
+| `replica-count` | Number of replicas per block (in addition to the primary) |
+| `message-size` | Max gRPC streaming chunk size (e.g. `"16KB"`, `"64KB"`) |
+| `block-size` | Max bytes per data block (e.g. `"4MB"`, `"32MB"`) |
+
+To modify the cluster (e.g., change the replication factor, block size, or add / remove data nodes), edit `rdfsconf.toml` and update `docker-compose.yml` accordingly.
 
 ## Cleanup
 

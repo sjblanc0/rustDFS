@@ -1,11 +1,13 @@
 use core::str;
 use futures::StreamExt;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::join;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::time::{self, Duration};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use uuid::Uuid;
@@ -15,6 +17,7 @@ use rustdfs_proto::data::WriteRequest;
 use rustdfs_proto::data::data_node_client::DataNodeClient;
 use rustdfs_proto::data::write_request::ReplicaNode;
 use rustdfs_proto::name::ReadRequest as NameReadRequest;
+use rustdfs_proto::name::RenewLeaseRequest;
 use rustdfs_proto::name::WriteEndRequest;
 use rustdfs_proto::name::WriteStartRequest;
 use rustdfs_proto::name::block::Node;
@@ -103,6 +106,14 @@ impl RustDFSClient {
             .map_err(RustDFSError::TonicStatus)?
             .into_inner();
 
+        let lease_handle = spawn_lease_renewal(
+            name.clone(),
+            self.dest.clone(),
+            op_id.clone(),
+            start_res.expire,
+            self.out.clone(),
+        );
+
         let mut err = None;
         let reader = reader(&self.source, start_res.message_size as usize).await?;
 
@@ -188,6 +199,8 @@ impl RustDFSClient {
                 _ => {}
             }
         }
+
+        lease_handle.abort();
 
         let end_req = write_end_req(&self.dest, &op_id, err.is_none());
         name.write_end(end_req).await.map_err(|e| {
@@ -399,6 +412,62 @@ fn to_replica_nodes(nodes: &[Node]) -> Vec<ReplicaNode> {
             port: n.port,
         })
         .collect()
+}
+
+/**
+ * Spawns a background task that periodically renews the write lease
+ * with the Name Node. Renews at half the remaining lease duration.
+ * The caller should [JoinHandle::abort] the returned handle when
+ * the write operation finishes.
+ *
+ *  @param name - Cloned [NameNodeClient] for issuing RenewLease RPCs.
+ *  @param file_name - Remote file name the lease belongs to.
+ *  @param operation_id - Operation ID that owns the lease.
+ *  @param expire - Lease expiry as epoch seconds.
+ *  @param out - [OutManager] for logging.
+ *  @return JoinHandle<()> - Handle to the renewal task.
+ */
+fn spawn_lease_renewal(
+    mut name: NameNodeClient<Channel>,
+    file_name: String,
+    operation_id: String,
+    expire: u64,
+    out: OutManager,
+) -> tokio::task::JoinHandle<()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let lease_secs = expire.saturating_sub(now);
+    let interval = Duration::from_secs(lease_secs / 2).max(Duration::from_secs(1));
+
+    tokio::spawn(async move {
+        loop {
+            time::sleep(interval).await;
+
+            let req = RenewLeaseRequest {
+                file_name: file_name.clone(),
+                operation_id: operation_id.clone(),
+            };
+
+            match name.renew_lease(req).await {
+                Ok(res) => {
+                    out.write(Verbosity::Info, || {
+                        format!(
+                            "Lease renewed for {} (expires {})",
+                            file_name,
+                            res.into_inner().expire
+                        )
+                    });
+                }
+                Err(e) => {
+                    let err = RustDFSError::TonicStatus(e);
+                    out.write_err(&err);
+                    break;
+                }
+            }
+        }
+    })
 }
 
 /**

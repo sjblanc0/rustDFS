@@ -4,7 +4,6 @@
  * [name] - Name Node service (file metadata, block allocation, leases).
  * [data] - Data Node service (block read/write, replication).
  */
-
 /// Name Node gRPC service and message types.
 pub mod name {
     use tonic::include_proto;
