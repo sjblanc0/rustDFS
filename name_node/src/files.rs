@@ -16,7 +16,8 @@ use rustdfs_proto::persist::{
 };
 use rustdfs_shared::conn::DataNodeManager;
 use rustdfs_shared::logging::{LogLevel, LogManager};
-use rustdfs_shared::{host::HostAddr, result::ServiceResult};
+use rustdfs_shared::host::HostAddr;
+use rustdfs_shared::result::{Result, ServiceResult};
 
 const CHECKPOINT_FILE: &str = "checkpoint";
 const JOURNAL_FILE: &str = "journal";
@@ -95,6 +96,12 @@ pub enum WriteStatus {
     Complete,
 }
 
+#[derive(Debug)]
+struct CheckpointRecords {
+    pub files: HashMap<String, VecDeque<FileDescriptor>>,
+    pub txn_id: u64,
+}
+
 impl FileManager {
     /**
      * Loads or creates a [FileManager], restoring state from checkpoint + journal.
@@ -122,9 +129,9 @@ impl FileManager {
 
         let checkpoint_path = name_dir.join(CHECKPOINT_FILE);
         let journal_path = name_dir.join(JOURNAL_FILE);
+        let records = Self::load_checkpoint(&checkpoint_path, &log_mgr);
+        let journal_txn_id = Self::replay_journal(&mut records.files, &journal_path, &log_mgr);
 
-        let (mut files, mut txn_id) = Self::load_checkpoint(&checkpoint_path, &log_mgr);
-        let journal_txn_id = Self::replay_journal(&mut files, &journal_path, &log_mgr);
         if journal_txn_id > txn_id {
             txn_id = journal_txn_id;
         }
@@ -220,7 +227,7 @@ impl FileManager {
                 expire: time + self.lease_duration as u64,
                 blocks: desc.blocks.iter().map(block_to_entry).collect(),
             })),
-        }).await;
+        }).await?;
 
         Ok((desc, time + self.lease_duration as u64))
     }
@@ -254,6 +261,7 @@ impl FileManager {
             WriteStatus::InProgress { ref id, .. } if id == operation_id => {
                 desc.status = WriteStatus::Complete;
                 drop(files);
+
                 self.append_journal(JournalEntry {
                     txn_id: 0,
                     op: Some(persist::journal_entry::Op::WriteComplete(
@@ -263,7 +271,8 @@ impl FileManager {
                         },
                     )),
                 })
-                .await;
+                .await?;
+
                 Ok(())
             }
             _ => {
@@ -405,13 +414,13 @@ impl FileManager {
         Ok(time)
     }
 
-    // ── Persistence ─────────────────────────────────────────────────────────
+    // Persistence logic
 
     /**
      * Appends a journal entry to the journal file and triggers a checkpoint
      * if the threshold has been reached.
      */
-    async fn append_journal(&self, mut entry: JournalEntry) {
+    async fn append_journal(&self, mut entry: JournalEntry) -> ServiceResult<()> {
         let mut txn_id = self.txn_id.write().await;
         *txn_id += 1;
         entry.txn_id = *txn_id;
@@ -419,17 +428,16 @@ impl FileManager {
         let journal_path = self.name_dir.join(JOURNAL_FILE);
         let buf = entry.encode_length_delimited_to_vec();
 
-        if let Err(e) = fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&journal_path)
             .and_then(|mut f| f.write_all(&buf))
-        {
-            self.log_mgr.write(LogLevel::Error, || {
-                format!("Failed to append journal: {}", e)
-            });
-            return;
-        }
+            .map_err(|e| {
+                let err = status_writing_journal(e);
+                self.log_mgr.write_status(&err);
+                err
+            })?;
 
         let mut count = self.journal_txn_count.write().await;
         *count += 1;
@@ -446,15 +454,17 @@ impl FileManager {
         if should_checkpoint {
             drop(count);
             drop(txn_id);
-            self.write_checkpoint().await;
+            self.write_checkpoint().await?;
         }
+
+        Ok(())
     }
 
     /**
      * Writes a full checkpoint of the current namespace to disk
      * and truncates the journal.
      */
-    async fn write_checkpoint(&self) {
+    async fn write_checkpoint(&self) -> ServiceResult<()> {
         let txn_id = *self.txn_id.read().await;
         let files = self.files.read().await;
 
@@ -472,31 +482,28 @@ impl FileManager {
         };
 
         drop(files);
-
         let tmp_path = self.name_dir.join(CHECKPOINT_TMP);
-        let checkpoint_path = self.name_dir.join(CHECKPOINT_FILE);
-
-        let buf = checkpoint.encode_to_vec();
-        if let Err(e) = fs::write(&tmp_path, &buf)
-            .and_then(|_| fs::rename(&tmp_path, &checkpoint_path))
-        {
-            self.log_mgr.write(LogLevel::Error, || {
-                format!("Failed to write checkpoint: {}", e)
-            });
-            return;
-        }
-
-        // Truncate journal
         let journal_path = self.name_dir.join(JOURNAL_FILE);
-        if let Err(e) = fs::OpenOptions::new()
+        let checkpoint_path = self.name_dir.join(CHECKPOINT_FILE);
+        let buf = checkpoint.encode_to_vec();
+
+        fs::write(&tmp_path, &buf)
+            .and_then(|_| fs::rename(&tmp_path, &checkpoint_path))
+            .map_err(|e| {
+                let err = status_writing_checkpoint(e);
+                self.log_mgr.write_status(&err);
+                err
+            })?;
+
+       fs::OpenOptions::new()
             .write(true)
             .truncate(true)
             .open(&journal_path)
-        {
-            self.log_mgr.write(LogLevel::Error, || {
-                format!("Failed to truncate journal: {}", e)
-            });
-        }
+            .map_err(|e| {
+                let err = status_truncating_journal(e);
+                self.log_mgr.write_status(&err);
+                err
+            })?;
 
         *self.journal_txn_count.write().await = 0;
         *self.last_checkpoint.write().await = SystemTime::now()
@@ -507,6 +514,8 @@ impl FileManager {
         self.log_mgr.write(LogLevel::Info, || {
             format!("Checkpoint written at txn_id={}", txn_id)
         });
+
+        Ok(())
     }
 
     /**
@@ -515,32 +524,33 @@ impl FileManager {
     fn load_checkpoint(
         path: &Path,
         log_mgr: &LogManager,
-    ) -> (HashMap<String, VecDeque<FileDescriptor>>, u64) {
+    ) -> Result<CheckpointRecords> {
         let bytes = match fs::read(path) {
             Ok(b) if !b.is_empty() => b,
-            _ => return (HashMap::new(), 0),
+            _ => return Ok(CheckpointRecords { files: HashMap::new(), txn_id: 0 }),
         };
 
         let checkpoint = match Checkpoint::decode(&*bytes) {
             Ok(c) => c,
             Err(e) => {
-                log_mgr.write(LogLevel::Error, || {
-                    format!("Failed to decode checkpoint: {}", e)
-                });
-                return (HashMap::new(), 0);
+                let err = status_decoding_checkpoint(e);
+                log_mgr.write_status(&err);
+                return Err(err);
             }
         };
 
-        let mut files: HashMap<String, VecDeque<FileDescriptor>> = HashMap::new();
+        let mut files = HashMap::new();
+
         for entry in checkpoint.files {
             let desc = entry_to_file_desc(&entry);
+
             files
                 .entry(entry.file_name)
                 .or_insert_with(VecDeque::new)
                 .push_back(desc);
         }
 
-        (files, checkpoint.txn_id)
+        Ok(CheckpointRecords { files, txn_id: checkpoint.txn_id })
     }
 
     /**
@@ -632,7 +642,7 @@ impl FileManager {
     }
 }
 
-// ── Conversion helpers ──────────────────────────────────────────────────────
+// conversion helpers
 
 fn file_desc_to_entry(name: &str, desc: &FileDescriptor) -> FileEntry {
     let (status, operation_id, expire) = match &desc.status {
@@ -681,6 +691,26 @@ fn entry_to_block_desc(e: &BlockEntry) -> BlockDescriptor {
 }
 
 // Status helpers
+
+fn status_writing_journal(e: std::io::Error) -> Status {
+    let msg = format!("Failed to write journal entry: {}", e);
+    Status::internal(msg)
+}
+
+fn status_truncating_journal(e: std::io::Error) -> Status {
+    let msg = format!("Failed to truncate journal: {}", e);
+    Status::internal(msg)
+}
+
+fn status_writing_checkpoint(e: std::io::Error) -> Status {
+    let msg = format!("Failed to write checkpoint: {}", e);
+    Status::internal(msg)
+}
+
+fn status_decoding_checkpoint(e: prost::DecodeError) -> Status {
+    let msg = format!("Failed to decode checkpoint: {}", e);
+    Status::internal(msg)
+}
 
 fn status_system_time(e: SystemTimeError) -> Status {
     let msg = format!("System time error: {}", e);
