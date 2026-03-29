@@ -1,5 +1,6 @@
 use std::fmt::{Display, Formatter, Result};
 use std::io::Error as IoError;
+use std::time::SystemTimeError;
 use toml::de::Error as TomlError;
 use tonic::Status;
 use tonic::transport::Error as TonicError;
@@ -11,6 +12,7 @@ use tonic::transport::Error as TonicError;
  *  @variant TonicError - Represents errors from the Tonic gRPC library.
  *  @variant TonicStatusError - Represents gRPC status errors.
  *  @variant TomlError - Represents errors during TOML parsing.
+ *  @variant SystemTimeError - Represents system clock errors.
  *  @variant CustomError - Represents custom error messages.
  */
 #[derive(Debug)]
@@ -19,6 +21,7 @@ pub enum RustDFSError {
     TonicError(TonicError),
     TonicStatusError(Status),
     TomlError(TomlError),
+    SystemTimeError(SystemTimeError),
     CustomError(String),
 }
 
@@ -36,6 +39,9 @@ impl Display for RustDFSError {
             }
             RustDFSError::TomlError(e) => {
                 write!(f, "TOML Error: {}", e)
+            }
+            RustDFSError::SystemTimeError(e) => {
+                write!(f, "System Time Error: {}", e)
             }
             RustDFSError::CustomError(msg) => {
                 write!(f, "RustDFS Error: {}", msg)

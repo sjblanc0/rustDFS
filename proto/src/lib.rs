@@ -15,3 +15,9 @@ pub mod data {
     use tonic::include_proto;
     include_proto!("data_node");
 }
+
+/// Name Node persistence message types (checkpoint + journal).
+pub mod persist {
+    use tonic::include_proto;
+    include_proto!("name_node_persist");
+}

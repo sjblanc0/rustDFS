@@ -6,6 +6,7 @@ block-size = "4MB"
 [name-node]
 host = "namenode"
 port = 5000
+name-dir = "/var/lib/rustdfs/names"
 log-file = "/var/log/rustdfs/namenode.log"
 
 [data-node]

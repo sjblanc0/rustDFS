@@ -11,7 +11,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .file_descriptor_set_path(out_dir.join("node_descriptor.bin"))
         //.protoc_arg("-I=../proto")
-        .compile_protos(&["data_node.proto", "name_node.proto"], &["proto"])?;
+        .compile_protos(
+            &["data_node.proto", "name_node.proto", "name_node_persist.proto"],
+            &["proto"],
+        )?;
 
     Ok(())
 }

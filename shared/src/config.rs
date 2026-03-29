@@ -11,6 +11,9 @@ const CONFIG_FILE_GLOBAL: &str = "/etc/rustdfs/rdfsconf.toml";
 const LEASE_DURATION_GLOBAL: u32 = 120;
 const LOG_FILE_GLOBAL: &str = "/var/log/rustdfs";
 const DATA_DIR_GLOBAL: &str = "/var/lib/rustdfs/data";
+const NAME_DIR_GLOBAL: &str = "/var/lib/rustdfs/names";
+const CHECKPOINT_TXNS_GLOBAL: u64 = 1000;
+const CHECKPOINT_PERIOD_GLOBAL: u64 = 3600;
 
 /**
  * Configuration structure for RustDFS. Deserialized from a TOML config file.
@@ -33,7 +36,10 @@ const DATA_DIR_GLOBAL: &str = "/var/lib/rustdfs/data";
  *  [name-node]
  *  host = "namenode1"
  *  port = 5000
+ *  name-dir = "/var/lib/rustdfs/names"
  *  log-file = "/var/log/rustdfs/namenode.log"
+ *  checkpoint-transactions = 1000
+ *  checkpoint-period = 3600
  *
  *  [data-node]
  *  data-dir = "/var/lib/rustdfs/data"
@@ -62,11 +68,14 @@ pub struct RustDFSConfig {
 }
 
 /**
- * Network and logging configuration for the Name Node.
+ * Network, logging, and persistence configuration for the Name Node.
  *
  *  @field host - Hostname or IP address of the name node.
  *  @field port - Port number for the name node gRPC service.
+ *  @field name_dir - Directory for checkpoint and journal files.
  *  @field log_file - Path to the log file.
+ *  @field checkpoint_txns - Max journal entries before forcing a checkpoint.
+ *  @field checkpoint_period - Max seconds between checkpoints.
  */
 #[derive(Deserialize)]
 pub struct NameNodeConfig {
@@ -76,8 +85,17 @@ pub struct NameNodeConfig {
     #[serde(rename = "port")]
     pub port: u16,
 
+    #[serde(rename = "name-dir", default = "default_name_dir")]
+    pub name_dir: String,
+
     #[serde(rename = "log-file", default = "default_log_file")]
     pub log_file: String,
+
+    #[serde(rename = "checkpoint-transactions", default = "default_checkpoint_txns")]
+    pub checkpoint_txns: u64,
+
+    #[serde(rename = "checkpoint-period", default = "default_checkpoint_period")]
+    pub checkpoint_period: u64,
 }
 
 /**
@@ -146,4 +164,16 @@ fn default_log_file() -> String {
 
 fn default_data_dir() -> String {
     DATA_DIR_GLOBAL.to_string()
+}
+
+fn default_name_dir() -> String {
+    NAME_DIR_GLOBAL.to_string()
+}
+
+fn default_checkpoint_txns() -> u64 {
+    CHECKPOINT_TXNS_GLOBAL
+}
+
+fn default_checkpoint_period() -> u64 {
+    CHECKPOINT_PERIOD_GLOBAL
 }

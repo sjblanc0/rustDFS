@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package name_node_persist;
+
+// ── Checkpoint ───────────────────────────────────────────────────────────────
+
+message Checkpoint {
+    uint64 txnID = 1;
+    repeated FileEntry files = 2;
+}
+
+message FileEntry {
+    string fileName = 1;
+    FileStatus status = 2;
+    string operationID = 3;
+    uint64 expire = 4;
+    repeated BlockEntry blocks = 5;
+}
+
+message BlockEntry {
+    string blockID = 1;
+    uint64 blockSize = 2;
+}
+
+enum FileStatus {
+    COMPLETE = 0;
+    IN_PROGRESS = 1;
+}
+
+// ── Journal ──────────────────────────────────────────────────────────────────
+
+message JournalEntry {
+    uint64 txnID = 1;
+    oneof op {
+        WriteStartEntry writeStart = 2;
+        WriteCompleteEntry writeComplete = 3;
+    }
+}
+
+message WriteStartEntry {
+    string fileName = 1;
+    string operationID = 2;
+    uint64 expire = 3;
+    repeated BlockEntry blocks = 4;
+}
+
+message WriteCompleteEntry {
+    string fileName = 1;
+    string operationID = 2;
+}

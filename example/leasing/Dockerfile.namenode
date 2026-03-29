@@ -23,7 +23,7 @@ RUN wget \
 
 RUN chmod +x /usr/local/bin/grpc_health_probe
 
-RUN mkdir -p /etc/rustdfs /var/log/rustdfs /var/lib/rustdfs
+RUN mkdir -p /etc/rustdfs /var/log/rustdfs /var/lib/rustdfs/names
 
 COPY --from=builder /build/target/release/rustDFS-namenode /usr/local/bin/rustDFS-namenode
 COPY example/leasing/rdfsconf.toml /etc/rustdfs/rdfsconf.toml

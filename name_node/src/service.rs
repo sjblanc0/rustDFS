@@ -227,12 +227,15 @@ impl NameNodeService {
                 hostname: config.name_node.host.clone(),
                 port: config.name_node.port,
             },
-            file_mgr: FileManager::new(
+            file_mgr: FileManager::load(
                 log_mgr.clone(),
                 config.lease_duration,
                 config.replica_count as usize,
                 config.block_size.as_usize(),
-            ),
+                config.name_node.name_dir,
+                config.name_node.checkpoint_txns,
+                config.name_node.checkpoint_period,
+            )?,
             data_nodes,
             log_mgr,
             message_size: config.message_size.as_usize(),
