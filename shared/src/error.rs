@@ -31,7 +31,7 @@ impl Display for RustDFSError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             RustDFSError::DecodeError(e) => {
-                write!(f, "Decode Error: {}", e)
+                write!(f, "Prost Decode Error: {}", e)
             }
             RustDFSError::IoError(e) => {
                 write!(f, "IO Error: {}", e)
