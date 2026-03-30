@@ -98,8 +98,12 @@ pub enum WriteStatus {
     Complete,
 }
 
+/**
+ * Internal struct for loading checkpoint, including 
+ * file map and last txn_id.
+ */
 #[derive(Debug)]
-struct CheckpointRecords {
+struct CheckpointRecord {
     pub files: HashMap<String, VecDeque<FileDescriptor>>,
     pub txn_id: u64,
 }
@@ -125,7 +129,7 @@ impl FileManager {
         name_dir: String,
         checkpoint_txns: u64,
         checkpoint_period: u64,
-    ) -> rustdfs_shared::result::Result<Self> {
+    ) -> Result<Self> {
         let name_dir = PathBuf::from(&name_dir);
         fs::create_dir_all(&name_dir).ok();
 
@@ -192,19 +196,23 @@ impl FileManager {
             .entry(file_name.to_string())
             .or_insert(VecDeque::new());
 
-        if let Some(desc) = deque.back() {
-            match &desc.status {
+        let mut evicted: Option<FileDescriptor> = None;
+        let mut evicted_front = false;
+
+        if let Some(back) = deque.back() {
+            match &back.status {
                 WriteStatus::InProgress { expire, .. } if time < *expire => {
                     let err = status_file_locked(file_name);
                     self.log_mgr.write_status(&err);
                     return Err(err);
                 }
                 WriteStatus::InProgress { .. } => {
-                    deque.pop_back();
+                    evicted = deque.pop_back();
                 }
                 _ => {
                     if deque.len() == 2 {
-                        deque.pop_front();
+                        evicted = deque.pop_front();
+                        evicted_front = true;
                     }
                 }
             }
@@ -219,9 +227,8 @@ impl FileManager {
         };
 
         deque.push_back(desc.clone());
-        drop(files);
 
-        self.append_journal(JournalEntry {
+        let journal_entry = JournalEntry {
             txn_id: 0,
             op: Some(Op::WriteStart(
                 WriteStartEntry {
@@ -231,9 +238,29 @@ impl FileManager {
                     blocks: desc.blocks.iter().map(block_to_entry).collect(),
                 }
             )),
-        }).await?;
+        };
 
-        Ok((desc, time + self.lease_duration as u64))
+        match self.persist_journal(journal_entry).await {
+            Ok(should_checkpoint) => {
+                drop(files);
+                self.maybe_checkpoint(should_checkpoint).await;
+                Ok((desc, time + self.lease_duration as u64))
+            }
+            Err(e) => {
+                // roll-back current operation if journal write fails
+                deque.pop_back();
+
+                if let Some(old) = evicted {
+                    if evicted_front {
+                        deque.push_front(old);
+                    } else {
+                        deque.push_back(old);
+                    }
+                }
+
+                Err(e)
+            }
+        }
     }
 
     /**
@@ -261,12 +288,12 @@ impl FileManager {
                 err
             })?;
 
-        match desc.status {
-            WriteStatus::InProgress { ref id, .. } if id == operation_id => {
+        let old_status = desc.status.clone();
+        match &old_status {
+            WriteStatus::InProgress { id, .. } if id == operation_id => {
                 desc.status = WriteStatus::Complete;
-                drop(files);
 
-                self.append_journal(JournalEntry {
+                let journal_entry = JournalEntry {
                     txn_id: 0,
                     op: Some(Op::WriteComplete(
                         WriteCompleteEntry {
@@ -274,9 +301,20 @@ impl FileManager {
                             operation_id: operation_id.to_string(),
                         },
                     )),
-                }).await?;
+                };
 
-                Ok(())
+                match self.persist_journal(journal_entry).await {
+                    Ok(should_checkpoint) => {
+                        drop(files);
+                        self.maybe_checkpoint(should_checkpoint).await;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        // roll-back current operation if journal write fails
+                        desc.status = old_status;
+                        Err(e)
+                    }
+                }
             }
             _ => {
                 let err = status_lease_expired(file_name);
@@ -386,10 +424,6 @@ impl FileManager {
             .collect::<ServiceResult<Vec<BlockDescriptor>>>()
     }
 
-    /**
-     * Randomly selects a primary data node plus `replica_ct` replicas.
-     * Returns an error if not enough data nodes are registered.
-     */
     // randomly selects a primary data node and replica nodes
     // for write operation
     async fn select_nodes(&self, data_nodes: &DataNodeManager) -> ServiceResult<Vec<HostAddr>> {
@@ -424,13 +458,16 @@ impl FileManager {
     // Persistence logic
 
     /**
-     * Appends a journal entry to the journal file and triggers a checkpoint
-     * if the threshold has been reached.
+     * Persists a journal entry to the journal file.
+     * Returns whether a checkpoint should be triggered afterward.
+     *
+     * This method does NOT acquire the files lock, so it is safe to call
+     * while holding it. On I/O failure the txn_id is rolled back.
      */
-    async fn append_journal(
+    async fn persist_journal(
         &self, 
         mut entry: JournalEntry,
-    ) -> ServiceResult<()> {
+    ) -> ServiceResult<bool> {
         let mut txn_id = self.txn_id.write().await;
         *txn_id += 1;
         entry.txn_id = *txn_id;
@@ -444,6 +481,7 @@ impl FileManager {
             .open(&journal_path)
             .and_then(|mut f| f.write_all(&buf))
             .map_err(|e| {
+                *txn_id -= 1;
                 let err = status_writing_journal(e);
                 self.log_mgr.write_status(&err);
                 err
@@ -458,21 +496,32 @@ impl FileManager {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
+
             now.saturating_sub(last) >= self.checkpoint_period
         };
 
-        if should_checkpoint {
-            drop(count);
-            drop(txn_id);
-            self.write_checkpoint().await?;
-        }
-
-        Ok(())
+        Ok(should_checkpoint)
     }
 
     /**
-     * Writes a full checkpoint of the current namespace to disk
-     * and truncates the journal.
+     * Triggers a checkpoint if the threshold was reached.
+     * Failure-tolerant operation since the journal entry has already been persisted.
+     */
+    async fn maybe_checkpoint(
+        &self, 
+        should_checkpoint: bool,
+    ) {
+        if should_checkpoint {
+            if let Err(e) = self.write_checkpoint().await {
+                self.log_mgr.write(LogLevel::Error, || {
+                    format!("Checkpoint failed: {}", e)
+                });
+            }
+        }
+    }
+
+    /**
+     * Writes current namespace to disk and truncates journal
      */
     async fn write_checkpoint(&self) -> ServiceResult<()> {
         let txn_id = *self.txn_id.read().await;
@@ -529,15 +578,23 @@ impl FileManager {
     }
 
     /**
-     * Loads the checkpoint file and returns the deserialized files map and txn_id.
+     * Loads the checkpoint file and returns the file map and last txn_id. 
+     * 
+     *  @param path - Path to the checkpoint file.
+     *  @param log_mgr - [LogManager] for logging any errors during loading.
+     *  @return Result<CheckpointRecord> - Loaded file map and txn_id, or error if decoding fails.
      */
     fn load_checkpoint(
         path: &Path,
         log_mgr: &LogManager,
-    ) -> Result<CheckpointRecords> {
+    ) -> Result<CheckpointRecord> {
         let bytes = match fs::read(path) {
-            Ok(b) if !b.is_empty() => b,
-            _ => return Ok(CheckpointRecords { files: HashMap::new(), txn_id: 0 }),
+            Ok(b) if !b.is_empty() => {
+                b
+            },
+            _ => {
+                return Ok(CheckpointRecord { files: HashMap::new(), txn_id: 0 });
+            }
         };
 
         let checkpoint = match Checkpoint::decode(&*bytes) {
@@ -560,12 +617,17 @@ impl FileManager {
                 .push_back(desc);
         }
 
-        Ok(CheckpointRecords { files, txn_id: checkpoint.txn_id })
+        Ok(CheckpointRecord { files, txn_id: checkpoint.txn_id })
     }
 
     /**
      * Replays journal entries from the journal file, applying each to the files map.
      * Returns the highest txn_id seen in the journal.
+     * 
+     *  @param files - Mutable reference to the file map to apply journal entries to.
+     *  @param path - Path to the journal file.
+     *  @param log_mgr - [LogManager] for logging any errors during replay.
+     *  @return Result<u64> - Highest txn_id seen in the journal, or error if decoding fails.
      */
     fn replay_journal(
         files: &mut HashMap<String, VecDeque<FileDescriptor>>,
@@ -631,9 +693,14 @@ impl FileManager {
                         Some(deque) => {
                             match deque.back_mut() {
                                 Some(desc) => {
-                                    if let WriteStatus::InProgress { ref id, .. } = desc.status {
-                                        if id == &wc.operation_id {
+                                    match desc.status {
+                                        WriteStatus::InProgress { ref id, .. } if id == &wc.operation_id => {
                                             desc.status = WriteStatus::Complete;
+                                        }
+                                        _ => {
+                                            let err = err_invalid_journal(&wc.file_name);
+                                            log_mgr.write_err(&err);
+                                            return Err(err);
                                         }
                                     }
                                 }
@@ -728,6 +795,11 @@ fn entry_to_block_desc(e: &BlockEntry) -> BlockDescriptor {
 }
 
 // Status helpers
+
+fn err_invalid_journal(file_name: &str) -> RustDFSError {
+    let msg = format!("Invalid journal entry for file: {}", file_name);
+    RustDFSError::CustomError(msg)
+}
 
 fn err_replay_nonexistent_file(file_name: &str) -> RustDFSError {
     let msg = format!("Replayed journal entry for non-existent file: {}", file_name);
