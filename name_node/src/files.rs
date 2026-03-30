@@ -688,27 +688,16 @@ impl FileManager {
                     }
                     deque.push_back(desc);
                 }
-                Some(Op::WriteComplete(wc)) => {
-                    match files.get_mut(&wc.file_name) {
-                        Some(deque) => {
-                            match deque.back_mut() {
-                                Some(desc) => {
-                                    match desc.status {
-                                        WriteStatus::InProgress { ref id, .. } if id == &wc.operation_id => {
-                                            desc.status = WriteStatus::Complete;
-                                        }
-                                        _ => {
-                                            let err = err_invalid_journal(&wc.file_name);
-                                            log_mgr.write_err(&err);
-                                            return Err(err);
-                                        }
-                                    }
-                                }
-                                None => {
-                                    let err = err_replay_nonexistent_file(&wc.file_name);
-                                    log_mgr.write_err(&err);
-                                    return Err(err);
-                                }
+                Some(Op::WriteComplete(wc)) => match files.get_mut(&wc.file_name) {
+                    Some(deque) => match deque.back_mut() {
+                        Some(desc) => match desc.status {
+                            WriteStatus::InProgress { ref id, .. } if id == &wc.operation_id => {
+                                desc.status = WriteStatus::Complete;
+                            }
+                            _ => {
+                                let err = err_invalid_journal(&wc.file_name);
+                                log_mgr.write_err(&err);
+                                return Err(err);
                             }
                         }
                         None => {
@@ -717,14 +706,10 @@ impl FileManager {
                             return Err(err);
                         }
                     }
-                    if let Some(deque) = files.get_mut(&wc.file_name) {
-                        if let Some(desc) = deque.back_mut() {
-                            if let WriteStatus::InProgress { ref id, .. } = desc.status {
-                                if id == &wc.operation_id {
-                                    desc.status = WriteStatus::Complete;
-                                }
-                            }
-                        }
+                    None => {
+                        let err = err_replay_nonexistent_file(&wc.file_name);
+                        log_mgr.write_err(&err);
+                        return Err(err);
                     }
                 }
                 None => {}
