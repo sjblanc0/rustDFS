@@ -91,7 +91,10 @@ pub struct NameNodeConfig {
     #[serde(rename = "log-file", default = "default_log_file")]
     pub log_file: String,
 
-    #[serde(rename = "checkpoint-transactions", default = "default_checkpoint_txns")]
+    #[serde(
+        rename = "checkpoint-transactions",
+        default = "default_checkpoint_txns"
+    )]
     pub checkpoint_txns: u64,
 
     #[serde(rename = "checkpoint-period", default = "default_checkpoint_period")]

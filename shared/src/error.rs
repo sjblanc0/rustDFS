@@ -1,10 +1,10 @@
+use prost::DecodeError;
 use std::fmt::{Display, Formatter, Result};
 use std::io::Error as IoError;
 use std::time::SystemTimeError;
 use toml::de::Error as TomlError;
 use tonic::Status;
 use tonic::transport::Error as TonicError;
-use prost::DecodeError;
 
 /**
  * Custom error type for RustDFS.
