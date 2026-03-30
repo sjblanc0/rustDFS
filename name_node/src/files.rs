@@ -132,7 +132,7 @@ impl FileManager {
         let checkpoint_path = name_dir.join(CHECKPOINT_FILE);
         let journal_path = name_dir.join(JOURNAL_FILE);
         let mut records = Self::load_checkpoint(&checkpoint_path, &log_mgr)?;
-        let journal_txn_id = Self::replay_journal(&mut records.files, &journal_path, &log_mgr);
+        let journal_txn_id = Self::replay_journal(&mut records.files, &journal_path, &log_mgr)?;
 
         if journal_txn_id > records.txn_id {
             records.txn_id = journal_txn_id;
@@ -223,12 +223,14 @@ impl FileManager {
 
         self.append_journal(JournalEntry {
             txn_id: 0,
-            op: Some(Op::WriteStart(WriteStartEntry {
-                file_name: file_name.to_string(),
-                operation_id: operation_id.to_string(),
-                expire: time + self.lease_duration as u64,
-                blocks: desc.blocks.iter().map(block_to_entry).collect(),
-            })),
+            op: Some(Op::WriteStart(
+                WriteStartEntry {
+                    file_name: file_name.to_string(),
+                    operation_id: operation_id.to_string(),
+                    expire: time + self.lease_duration as u64,
+                    blocks: desc.blocks.iter().map(block_to_entry).collect(),
+                }
+            )),
         }).await?;
 
         Ok((desc, time + self.lease_duration as u64))
@@ -291,7 +293,11 @@ impl FileManager {
      *  @param operation_id - ID of the write operation holding the lease.
      *  @return ServiceResult<u64> - New lease expiry in epoch seconds.
      */
-    pub async fn renew_lease(&self, file_name: &str, operation_id: &str) -> ServiceResult<u64> {
+    pub async fn renew_lease(
+        &self, 
+        file_name: &str, 
+        operation_id: &str,
+    ) -> ServiceResult<u64> {
         let time = self.get_time_sec()?;
         let mut files = self.files.write().await;
 
@@ -565,10 +571,10 @@ impl FileManager {
         files: &mut HashMap<String, VecDeque<FileDescriptor>>,
         path: &Path,
         log_mgr: &LogManager,
-    ) -> u64 {
+    ) -> Result<u64> {
         let bytes = match fs::read(path) {
             Ok(b) if !b.is_empty() => b,
-            _ => return 0,
+            _ => return Ok(0),
         };
 
         let mut cursor = &bytes[..];
@@ -581,13 +587,9 @@ impl FileManager {
                     e
                 },
                 Err(e) => {
-                    log_mgr.write(LogLevel::Error, || {
-                        format!(
-                            "Journal decode error after {} entries: {}",
-                            replayed, e
-                        )
-                    });
-                    break;
+                    let err = RustDFSError::DecodeError(e);
+                    log_mgr.write_err(&err);
+                    return Err(err);
                 }
             };
 
@@ -602,8 +604,11 @@ impl FileManager {
                             id: ws.operation_id,
                             expire: ws.expire,
                         },
-                        blocks: ws.blocks.iter().map(entry_to_block_desc).collect(),
+                        blocks: ws.blocks.iter()
+                            .map(entry_to_block_desc)
+                            .collect(),
                     };
+
                     let deque = files
                         .entry(ws.file_name)
                         .or_insert_with(VecDeque::new);
@@ -622,6 +627,29 @@ impl FileManager {
                     deque.push_back(desc);
                 }
                 Some(Op::WriteComplete(wc)) => {
+                    match files.get_mut(&wc.file_name) {
+                        Some(deque) => {
+                            match deque.back_mut() {
+                                Some(desc) => {
+                                    if let WriteStatus::InProgress { ref id, .. } = desc.status {
+                                        if id == &wc.operation_id {
+                                            desc.status = WriteStatus::Complete;
+                                        }
+                                    }
+                                }
+                                None => {
+                                    let err = err_replay_nonexistent_file(&wc.file_name);
+                                    log_mgr.write_err(&err);
+                                    return Err(err);
+                                }
+                            }
+                        }
+                        None => {
+                            let err = err_replay_nonexistent_file(&wc.file_name);
+                            log_mgr.write_err(&err);
+                            return Err(err);
+                        }
+                    }
                     if let Some(deque) = files.get_mut(&wc.file_name) {
                         if let Some(desc) = deque.back_mut() {
                             if let WriteStatus::InProgress { ref id, .. } = desc.status {
@@ -644,7 +672,7 @@ impl FileManager {
             });
         }
 
-        max_txn
+        Ok(max_txn)
     }
 }
 
@@ -652,16 +680,19 @@ impl FileManager {
 
 fn file_desc_to_entry(name: &str, desc: &FileDescriptor) -> FileEntry {
     let (status, operation_id, expire) = match &desc.status {
-        WriteStatus::Complete => (FileStatus::Complete.into(), String::new(), 1),
+        WriteStatus::Complete => {
+            (FileStatus::Complete.into(), String::new(), 1)
+        },
         WriteStatus::InProgress { id, expire } => {
             (FileStatus::InProgress.into(), id.clone(), *expire)
         }
     };
+
     FileEntry {
         file_name: name.to_string(),
-        status,
-        operation_id,
-        expire,
+        status: status,
+        operation_id: operation_id,
+        expire: expire,
         blocks: desc.blocks.iter().map(block_to_entry).collect(),
     }
 }
@@ -697,6 +728,11 @@ fn entry_to_block_desc(e: &BlockEntry) -> BlockDescriptor {
 }
 
 // Status helpers
+
+fn err_replay_nonexistent_file(file_name: &str) -> RustDFSError {
+    let msg = format!("Replayed journal entry for non-existent file: {}", file_name);
+    RustDFSError::CustomError(msg)
+}
 
 fn status_writing_journal(e: std::io::Error) -> Status {
     let msg = format!("Failed to write journal entry: {}", e);
