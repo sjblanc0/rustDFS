@@ -14,6 +14,10 @@ const DATA_DIR_GLOBAL: &str = "/var/lib/rustdfs/data";
 const NAME_DIR_GLOBAL: &str = "/var/lib/rustdfs/names";
 const CHECKPOINT_TXNS_GLOBAL: u64 = 1000;
 const CHECKPOINT_PERIOD_GLOBAL: u64 = 3600;
+const HEARTBEAT_INTERVAL_GLOBAL: u64 = 3;
+const HEARTBEAT_TIMEOUT_GLOBAL: u64 = 30;
+const HEARTBEAT_RECHECK_GLOBAL: u64 = 5;
+const REPLICA_CONN_TTL_GLOBAL: u64 = 300;
 
 /**
  * Configuration structure for RustDFS. Deserialized from a TOML config file.
@@ -44,6 +48,7 @@ const CHECKPOINT_PERIOD_GLOBAL: u64 = 3600;
  *  [data-node]
  *  data-dir = "/var/lib/rustdfs/data"
  *  log-file = "/var/log/rustdfs/datanode.log"
+ *  heartbeat-interval = 3
  * ```
  */
 #[derive(Deserialize)]
@@ -76,6 +81,8 @@ pub struct RustDFSConfig {
  *  @field log_file - Path to the log file.
  *  @field checkpoint_txns - Max journal entries before forcing a checkpoint.
  *  @field checkpoint_period - Max seconds between checkpoints.
+ *  @field heartbeat_timeout - Seconds of missed heartbeats before declaring a node dead.
+ *  @field heartbeat_recheck_interval - Seconds between reaper sweeps.
  */
 #[derive(Deserialize)]
 pub struct NameNodeConfig {
@@ -99,6 +106,15 @@ pub struct NameNodeConfig {
 
     #[serde(rename = "checkpoint-period", default = "default_checkpoint_period")]
     pub checkpoint_period: u64,
+
+    #[serde(rename = "heartbeat-timeout", default = "default_heartbeat_timeout")]
+    pub heartbeat_timeout: u64,
+
+    #[serde(
+        rename = "heartbeat-recheck-interval",
+        default = "default_heartbeat_recheck"
+    )]
+    pub heartbeat_recheck_interval: u64,
 }
 
 /**
@@ -106,6 +122,8 @@ pub struct NameNodeConfig {
  *
  *  @field data_dir - Directory path for storing data blocks on disk.
  *  @field log_file - Path to the log file.
+ *  @field heartbeat_interval - Seconds between heartbeat RPCs to the name node.
+ *  @field replica_connection_ttl - Seconds before an idle replication connection is reaped.
  */
 #[derive(Deserialize)]
 pub struct DataNodeConfig {
@@ -114,6 +132,15 @@ pub struct DataNodeConfig {
 
     #[serde(rename = "log-file", default = "default_log_file")]
     pub log_file: String,
+
+    #[serde(rename = "heartbeat-interval", default = "default_heartbeat_interval")]
+    pub heartbeat_interval: u64,
+
+    #[serde(
+        rename = "replica-connection-ttl",
+        default = "default_replica_conn_ttl"
+    )]
+    pub replica_connection_ttl: u64,
 }
 
 impl RustDFSConfig {
@@ -179,4 +206,20 @@ fn default_checkpoint_txns() -> u64 {
 
 fn default_checkpoint_period() -> u64 {
     CHECKPOINT_PERIOD_GLOBAL
+}
+
+fn default_heartbeat_interval() -> u64 {
+    HEARTBEAT_INTERVAL_GLOBAL
+}
+
+fn default_heartbeat_timeout() -> u64 {
+    HEARTBEAT_TIMEOUT_GLOBAL
+}
+
+fn default_heartbeat_recheck() -> u64 {
+    HEARTBEAT_RECHECK_GLOBAL
+}
+
+fn default_replica_conn_ttl() -> u64 {
+    REPLICA_CONN_TTL_GLOBAL
 }

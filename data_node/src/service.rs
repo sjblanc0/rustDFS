@@ -4,6 +4,7 @@ use rustdfs_proto::data::write_request::ReplicaNode;
 use std::io::Error as IoError;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use std::vec;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::join;
@@ -15,16 +16,16 @@ use tokio_retry2::{Retry, RetryError};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Streaming;
-use tonic::transport::Server;
+use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 use tonic_health::server::{self as health_server, HealthReporter};
 
+use crate::conn::DataNodeManager;
 use rustdfs_proto::data::data_node_server::{DataNode, DataNodeServer};
 use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
-use rustdfs_proto::name::RegisterRequest;
 use rustdfs_proto::name::name_node_client::NameNodeClient;
+use rustdfs_proto::name::{HeartbeatRequest, RegisterRequest};
 use rustdfs_shared::config::RustDFSConfig;
-use rustdfs_shared::conn::DataNodeManager;
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
@@ -49,6 +50,8 @@ type RetryResult<T> = std::result::Result<T, RetryError<RustDFSError>>;
  *  @field data_mgr - [BlockManager] for local block I/O.
  *  @field log_mgr - [LogManager] for logging.
  *  @field message_size - Max gRPC streaming message size in bytes.
+ *  @field heartbeat_interval - Seconds between heartbeat RPCs.
+ *  @field replica_connection_ttl - Seconds before an idle replication connection is evicted.
  */
 #[derive(Debug)]
 pub struct DataNodeService {
@@ -58,6 +61,8 @@ pub struct DataNodeService {
     data_mgr: BlockManager,
     log_mgr: LogManager,
     message_size: usize,
+    heartbeat_interval: u64,
+    replica_connection_ttl: u64,
 }
 
 #[tonic::async_trait]
@@ -323,6 +328,8 @@ impl DataNodeService {
             data_mgr: BlockManager::new(&config.data_node.data_dir, &logger)?,
             log_mgr: logger,
             message_size: config.message_size.as_usize(),
+            heartbeat_interval: config.data_node.heartbeat_interval,
+            replica_connection_ttl: config.data_node.replica_connection_ttl,
         })
     }
 
@@ -346,11 +353,20 @@ impl DataNodeService {
 
         let host = self.host.clone();
         let name_host = self.name_host.clone();
-        let retry_strat = ExponentialBackoff::from_millis(100)
-            .factor(1)
-            .max_delay_millis(1000)
-            .max_interval(10000)
-            .map(jitter);
+        let heartbeat_interval = self.heartbeat_interval;
+
+        // Spawn the replication connection TTL reaper task.
+        let reaper_nodes = Arc::clone(&self.data_nodes);
+        let reaper_ttl = self.replica_connection_ttl;
+        tokio::spawn(async move {
+            // Recheck at half the TTL, at least every 30 seconds.
+            let recheck = (reaper_ttl / 2).clamp(1, 30);
+            let mut interval = tokio::time::interval(Duration::from_secs(recheck));
+            loop {
+                interval.tick().await;
+                reaper_nodes.remove_stale(reaper_ttl).await;
+            }
+        });
 
         health_rep
             .set_serving::<DataNodeServer<DataNodeService>>()
@@ -366,12 +382,13 @@ impl DataNodeService {
                     logger.write_err(&err);
                     err
                 }),
-            Retry::spawn(retry_strat, || init_name_conn(
+            name_node_lifecycle(
                 logger.clone(),
                 health_rep.clone(),
-                host.clone(),
-                name_host.clone(),
-            )),
+                host,
+                name_host,
+                heartbeat_interval,
+            ),
         );
 
         health_rep
@@ -379,26 +396,107 @@ impl DataNodeService {
             .await;
 
         res.0?;
-        res.1?;
         Ok(())
     }
 }
 
 /**
- * Initializes connection to the Name Node and registers this Data Node.
+ * Manages the full Name Node lifecycle: connect, register, heartbeat, re-register.
+ * Runs in an infinite loop — on heartbeat failure, re-enters the registration path.
  *
  *  @param logger - LogManager for logging.
  *  @param health_rep - HealthReporter for service health status.
  *  @param host - HostAddr of this Data Node.
  *  @param name_host - HostAddr of the Name Node.
- *  @return RetryResult<()> - Result indicating success or transient error for retrying.
+ *  @param heartbeat_interval - Seconds between heartbeat RPCs.
  */
-async fn init_name_conn(
+async fn name_node_lifecycle(
     logger: LogManager,
     health_rep: HealthReporter,
     host: HostAddr,
     name_host: HostAddr,
-) -> RetryResult<()> {
+    heartbeat_interval: u64,
+) {
+    loop {
+        // Phase 1: Connect and register with exponential backoff.
+        let retry_strat = ExponentialBackoff::from_millis(100)
+            .factor(1)
+            .max_delay_millis(1000)
+            .max_interval(10000)
+            .map(jitter);
+
+        let client = Retry::spawn(retry_strat, || {
+            connect_and_register(
+                logger.clone(),
+                health_rep.clone(),
+                host.clone(),
+                name_host.clone(),
+            )
+        })
+        .await;
+
+        let mut client = match client {
+            Ok(c) => c,
+            Err(e) => {
+                logger.write(LogLevel::Error, || {
+                    format!("Registration failed permanently: {}", e)
+                });
+                return;
+            }
+        };
+
+        // Phase 2: Heartbeat loop — runs until the name node becomes unreachable.
+        logger.write(LogLevel::Info, || {
+            format!(
+                "Starting heartbeat loop (interval={}s) to {}:{}",
+                heartbeat_interval, name_host.hostname, name_host.port
+            )
+        });
+
+        let mut interval = tokio::time::interval(Duration::from_secs(heartbeat_interval));
+        loop {
+            interval.tick().await;
+            let result = client
+                .heartbeat(HeartbeatRequest {
+                    host: host.hostname.clone(),
+                    port: host.port as u32,
+                })
+                .await;
+
+            if let Err(e) = result {
+                logger.write(LogLevel::Error, || {
+                    format!(
+                        "Heartbeat to {}:{} failed: {}. Re-registering...",
+                        name_host.hostname, name_host.port, e
+                    )
+                });
+
+                health_rep
+                    .set_not_serving::<DataNodeServer<DataNodeService>>()
+                    .await;
+
+                break;
+            }
+        }
+    }
+}
+
+/**
+ * Connects to the Name Node and sends a registration request.
+ * Returns the connected client for reuse in the heartbeat loop.
+ *
+ *  @param logger - LogManager for logging.
+ *  @param health_rep - HealthReporter for service health status.
+ *  @param host - HostAddr of this Data Node.
+ *  @param name_host - HostAddr of the Name Node.
+ *  @return RetryResult<NameNodeClient<Channel>> - Connected client or transient error.
+ */
+async fn connect_and_register(
+    logger: LogManager,
+    health_rep: HealthReporter,
+    host: HostAddr,
+    name_host: HostAddr,
+) -> RetryResult<NameNodeClient<Channel>> {
     let endpoint = name_host.to_endpoint(&logger)?;
     let client = NameNodeClient::connect(endpoint).await;
 
@@ -417,8 +515,8 @@ async fn init_name_conn(
         return RetryError::to_transient(err);
     }
 
+    let mut client = client.unwrap();
     let res = client
-        .unwrap()
         .register(RegisterRequest {
             host: host.hostname.clone(),
             port: host.port as u32,
@@ -444,7 +542,14 @@ async fn init_name_conn(
         .set_serving::<DataNodeServer<DataNodeService>>()
         .await;
 
-    Ok(())
+    logger.write(LogLevel::Info, || {
+        format!(
+            "Registered with NameNode at {}:{}",
+            name_host.hostname, name_host.port
+        )
+    });
+
+    Ok(client)
 }
 
 // Retrieves the hostname of the current machine.

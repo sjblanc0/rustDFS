@@ -12,12 +12,12 @@ use tokio::sync::RwLock;
 use tonic::Status;
 use uuid::Uuid;
 
+use crate::conn::DataNodeManager;
 use rustdfs_proto::persist::journal_entry::Op;
 use rustdfs_proto::persist::{
     BlockEntry, Checkpoint, FileEntry, FileStatus, JournalEntry, WriteCompleteEntry,
     WriteStartEntry,
 };
-use rustdfs_shared::conn::DataNodeManager;
 use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
 use rustdfs_shared::result::{Result, ServiceResult};

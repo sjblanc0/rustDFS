@@ -5,6 +5,7 @@
  * then starts the Name Node gRPC server.
  */
 mod args;
+mod conn;
 mod files;
 mod service;
 
