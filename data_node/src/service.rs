@@ -11,7 +11,7 @@ use tokio::join;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{self};
 use tokio::task::{JoinError, JoinSet};
-use tokio_retry2::strategy::{ExponentialBackoff, MaxInterval, jitter};
+use tokio_retry2::strategy::{ExponentialBackoff, jitter};
 use tokio_retry2::{Retry, RetryError};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
@@ -418,14 +418,14 @@ async fn name_node_lifecycle(
     heartbeat_interval: u64,
 ) {
     loop {
-        // Phase 1: Connect and register with exponential backoff.
+        // Phase 1: Connect and register with exponential backoff (retries indefinitely).
         let retry_strat = ExponentialBackoff::from_millis(100)
-            .factor(1)
-            .max_delay_millis(1000)
-            .max_interval(10000)
+            .factor(2)
+            .max_delay_millis(5000)
             .map(jitter);
 
-        let client = Retry::spawn(retry_strat, || {
+        // Retry::spawn on an infinite iterator only resolves on success.
+        let mut client = Retry::spawn(retry_strat, || {
             connect_and_register(
                 logger.clone(),
                 health_rep.clone(),
@@ -433,17 +433,8 @@ async fn name_node_lifecycle(
                 name_host.clone(),
             )
         })
-        .await;
-
-        let mut client = match client {
-            Ok(c) => c,
-            Err(e) => {
-                logger.write(LogLevel::Error, || {
-                    format!("Registration failed permanently: {}", e)
-                });
-                return;
-            }
-        };
+        .await
+        .expect("infinite retry strategy yielded an error");
 
         // Phase 2: Heartbeat loop — runs until the name node becomes unreachable.
         logger.write(LogLevel::Info, || {

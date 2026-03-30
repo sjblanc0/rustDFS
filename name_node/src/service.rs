@@ -208,6 +208,7 @@ impl NameNode for NameNodeService {
         let req = request.into_inner();
 
         self.data_nodes.add_conn(&req.host, req.port as u16).await?;
+        self.data_nodes.record_heartbeat(&req.host).await;
 
         self.log_mgr.write(LogLevel::Info, || {
             format!("Registered data node at {}:{}", req.host, req.port)
