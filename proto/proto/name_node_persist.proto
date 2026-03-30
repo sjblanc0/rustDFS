@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package name_node_persist;
 
-// ── Checkpoint ───────────────────────────────────────────────────────────────
+// checkpoint logic
 
 message Checkpoint {
     uint64 txnID = 1;
@@ -27,7 +27,7 @@ enum FileStatus {
     IN_PROGRESS = 1;
 }
 
-// ── Journal ──────────────────────────────────────────────────────────────────
+// journal logic
 
 message JournalEntry {
     uint64 txnID = 1;

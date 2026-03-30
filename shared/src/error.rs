@@ -4,6 +4,7 @@ use std::time::SystemTimeError;
 use toml::de::Error as TomlError;
 use tonic::Status;
 use tonic::transport::Error as TonicError;
+use prost::DecodeError;
 
 /**
  * Custom error type for RustDFS.
@@ -17,6 +18,7 @@ use tonic::transport::Error as TonicError;
  */
 #[derive(Debug)]
 pub enum RustDFSError {
+    DecodeError(DecodeError),
     IoError(IoError),
     TonicError(TonicError),
     TonicStatusError(Status),
@@ -28,6 +30,9 @@ pub enum RustDFSError {
 impl Display for RustDFSError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
+            RustDFSError::DecodeError(e) => {
+                write!(f, "Decode Error: {}", e)
+            }
             RustDFSError::IoError(e) => {
                 write!(f, "IO Error: {}", e)
             }

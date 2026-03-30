@@ -1,6 +1,7 @@
 use futures::future;
 use prost::Message;
 use rand::seq::SliceRandom;
+use rustdfs_shared::error::RustDFSError;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs;
@@ -12,8 +13,9 @@ use tonic::Status;
 use uuid::Uuid;
 
 use rustdfs_proto::persist::{
-    self, BlockEntry, Checkpoint, FileEntry, JournalEntry, WriteCompleteEntry, WriteStartEntry,
+    BlockEntry, Checkpoint, FileEntry, FileStatus, JournalEntry, WriteCompleteEntry, WriteStartEntry
 };
+use rustdfs_proto::persist::journal_entry::Op;
 use rustdfs_shared::conn::DataNodeManager;
 use rustdfs_shared::logging::{LogLevel, LogManager};
 use rustdfs_shared::host::HostAddr;
@@ -129,18 +131,18 @@ impl FileManager {
 
         let checkpoint_path = name_dir.join(CHECKPOINT_FILE);
         let journal_path = name_dir.join(JOURNAL_FILE);
-        let records = Self::load_checkpoint(&checkpoint_path, &log_mgr);
+        let mut records = Self::load_checkpoint(&checkpoint_path, &log_mgr)?;
         let journal_txn_id = Self::replay_journal(&mut records.files, &journal_path, &log_mgr);
 
-        if journal_txn_id > txn_id {
-            txn_id = journal_txn_id;
+        if journal_txn_id > records.txn_id {
+            records.txn_id = journal_txn_id;
         }
 
-        let file_count: usize = files.len();
+        let file_count: usize = records.files.len();
         log_mgr.write(LogLevel::Info, || {
             format!(
                 "Loaded namespace: {} files, txn_id={}",
-                file_count, txn_id
+                file_count, records.txn_id
             )
         });
 
@@ -150,13 +152,13 @@ impl FileManager {
             .as_secs();
 
         Ok(FileManager {
-            files: RwLock::new(files),
+            files: RwLock::new(records.files),
             log_mgr,
             lease_duration,
             replica_ct,
             block_size,
             name_dir,
-            txn_id: RwLock::new(txn_id),
+            txn_id: RwLock::new(records.txn_id),
             journal_txn_count: RwLock::new(0),
             checkpoint_txns,
             checkpoint_period,
@@ -220,8 +222,8 @@ impl FileManager {
         drop(files);
 
         self.append_journal(JournalEntry {
-            txn_id: 0, // filled by append_journal
-            op: Some(persist::journal_entry::Op::WriteStart(WriteStartEntry {
+            txn_id: 0,
+            op: Some(Op::WriteStart(WriteStartEntry {
                 file_name: file_name.to_string(),
                 operation_id: operation_id.to_string(),
                 expire: time + self.lease_duration as u64,
@@ -264,14 +266,13 @@ impl FileManager {
 
                 self.append_journal(JournalEntry {
                     txn_id: 0,
-                    op: Some(persist::journal_entry::Op::WriteComplete(
+                    op: Some(Op::WriteComplete(
                         WriteCompleteEntry {
                             file_name: file_name.to_string(),
                             operation_id: operation_id.to_string(),
                         },
                     )),
-                })
-                .await?;
+                }).await?;
 
                 Ok(())
             }
@@ -420,7 +421,10 @@ impl FileManager {
      * Appends a journal entry to the journal file and triggers a checkpoint
      * if the threshold has been reached.
      */
-    async fn append_journal(&self, mut entry: JournalEntry) -> ServiceResult<()> {
+    async fn append_journal(
+        &self, 
+        mut entry: JournalEntry,
+    ) -> ServiceResult<()> {
         let mut txn_id = self.txn_id.write().await;
         *txn_id += 1;
         entry.txn_id = *txn_id;
@@ -533,8 +537,8 @@ impl FileManager {
         let checkpoint = match Checkpoint::decode(&*bytes) {
             Ok(c) => c,
             Err(e) => {
-                let err = status_decoding_checkpoint(e);
-                log_mgr.write_status(&err);
+                let err = RustDFSError::DecodeError(e);
+                log_mgr.write_err(&err);
                 return Err(err);
             }
         };
@@ -573,7 +577,9 @@ impl FileManager {
 
         while !cursor.is_empty() {
             let entry = match JournalEntry::decode_length_delimited(&mut cursor) {
-                Ok(e) => e,
+                Ok(e) => {
+                    e
+                },
                 Err(e) => {
                     log_mgr.write(LogLevel::Error, || {
                         format!(
@@ -590,7 +596,7 @@ impl FileManager {
             }
 
             match entry.op {
-                Some(persist::journal_entry::Op::WriteStart(ws)) => {
+                Some(Op::WriteStart(ws)) => {
                     let desc = FileDescriptor {
                         status: WriteStatus::InProgress {
                             id: ws.operation_id,
@@ -601,7 +607,7 @@ impl FileManager {
                     let deque = files
                         .entry(ws.file_name)
                         .or_insert_with(VecDeque::new);
-                    // Evict expired in-progress or keep at most 2 versions
+
                     if let Some(back) = deque.back() {
                         match &back.status {
                             WriteStatus::InProgress { .. } => {
@@ -615,7 +621,7 @@ impl FileManager {
                     }
                     deque.push_back(desc);
                 }
-                Some(persist::journal_entry::Op::WriteComplete(wc)) => {
+                Some(Op::WriteComplete(wc)) => {
                     if let Some(deque) = files.get_mut(&wc.file_name) {
                         if let Some(desc) = deque.back_mut() {
                             if let WriteStatus::InProgress { ref id, .. } = desc.status {
@@ -646,9 +652,9 @@ impl FileManager {
 
 fn file_desc_to_entry(name: &str, desc: &FileDescriptor) -> FileEntry {
     let (status, operation_id, expire) = match &desc.status {
-        WriteStatus::Complete => (persist::FileStatus::Complete.into(), String::new(), 0),
+        WriteStatus::Complete => (FileStatus::Complete.into(), String::new(), 1),
         WriteStatus::InProgress { id, expire } => {
-            (persist::FileStatus::InProgress.into(), id.clone(), *expire)
+            (FileStatus::InProgress.into(), id.clone(), *expire)
         }
     };
     FileEntry {
@@ -661,7 +667,7 @@ fn file_desc_to_entry(name: &str, desc: &FileDescriptor) -> FileEntry {
 }
 
 fn entry_to_file_desc(entry: &FileEntry) -> FileDescriptor {
-    let status = if entry.status == persist::FileStatus::InProgress as i32 {
+    let status = if entry.status == FileStatus::InProgress as i32 {
         WriteStatus::InProgress {
             id: entry.operation_id.clone(),
             expire: entry.expire,
@@ -704,11 +710,6 @@ fn status_truncating_journal(e: std::io::Error) -> Status {
 
 fn status_writing_checkpoint(e: std::io::Error) -> Status {
     let msg = format!("Failed to write checkpoint: {}", e);
-    Status::internal(msg)
-}
-
-fn status_decoding_checkpoint(e: prost::DecodeError) -> Status {
-    let msg = format!("Failed to decode checkpoint: {}", e);
     Status::internal(msg)
 }
 
