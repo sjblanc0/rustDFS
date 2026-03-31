@@ -10,6 +10,7 @@ service NameNode {
     rpc RenewLease (RenewLeaseRequest) returns (RenewLeaseResponse);
     rpc Read (ReadRequest) returns (ReadResponse);
     rpc Register (RegisterRequest) returns (google.protobuf.Empty);
+    rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 message WriteStartRequest {
@@ -54,6 +55,14 @@ message ReadResponse {
 message RegisterRequest {
     string host = 1;
     uint32 port = 2;
+}
+
+message HeartbeatRequest {
+    string host = 1;
+    uint32 port = 2;
+}
+
+message HeartbeatResponse {
 }
 
 message Block {

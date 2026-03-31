@@ -1,16 +1,20 @@
 use rand::seq::SliceRandom;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::oneshot;
 use tonic::transport::Server;
 use tonic::{Request, Response};
 use tonic_health::server as health_server;
 
+use crate::nodes::DataNodeManager;
 use rustdfs_proto::name::name_node_server::NameNode;
 use rustdfs_proto::name::name_node_server::NameNodeServer;
 use rustdfs_proto::name::{
-    Block, ReadRequest, ReadResponse, RegisterRequest, RenewLeaseRequest, RenewLeaseResponse,
-    WriteEndRequest, WriteStartRequest, WriteStartResponse, block::Node,
+    Block, HeartbeatRequest, HeartbeatResponse, ReadRequest, ReadResponse, RegisterRequest,
+    RenewLeaseRequest, RenewLeaseResponse, WriteEndRequest, WriteStartRequest, WriteStartResponse,
+    block::Node,
 };
 use rustdfs_shared::config::RustDFSConfig;
-use rustdfs_shared::conn::DataNodeManager;
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
@@ -33,14 +37,18 @@ use crate::files::FileManager;
  *  @field data_nodes - [DataNodeManager] for registered data node connections.
  *  @field log_mgr - [LogManager] for logging operations.
  *  @field message_size - Max gRPC streaming message size in bytes.
+ *  @field heartbeat_timeout - Seconds before a node with no heartbeat is declared dead.
+ *  @field heartbeat_recheck_interval - Seconds between reaper sweeps.
  */
 #[derive(Debug)]
 pub struct NameNodeService {
     host: HostAddr,
     file_mgr: FileManager,
-    data_nodes: DataNodeManager,
+    data_nodes: Arc<DataNodeManager>,
     log_mgr: LogManager,
     message_size: usize,
+    heartbeat_timeout: u64,
+    heartbeat_recheck_interval: u64,
 }
 
 #[tonic::async_trait]
@@ -201,12 +209,29 @@ impl NameNode for NameNodeService {
         let req = request.into_inner();
 
         self.data_nodes.add_conn(&req.host, req.port as u16).await?;
+        self.data_nodes.record_heartbeat(&req.host).await;
 
         self.log_mgr.write(LogLevel::Info, || {
             format!("Registered data node at {}:{}", req.host, req.port)
         });
 
         Ok(Response::new(()))
+    }
+
+    /**
+     * Handles a heartbeat from a data node, recording its liveness.
+     *
+     *  @param request - [HeartbeatRequest] with host and port of the data node.
+     *  @return ServiceResult<Response<HeartbeatResponse>> - Empty acknowledgement.
+     */
+    async fn heartbeat(
+        &self,
+        request: Request<HeartbeatRequest>,
+    ) -> ServiceResult<Response<HeartbeatResponse>> {
+        let req = request.into_inner();
+
+        self.data_nodes.record_heartbeat(&req.host).await;
+        Ok(Response::new(HeartbeatResponse {}))
     }
 }
 
@@ -220,7 +245,7 @@ impl NameNodeService {
      */
     pub fn new(args: RustDFSArgs, config: RustDFSConfig) -> Result<Self> {
         let log_mgr = LogManager::new(config.name_node.log_file, args.log_level, args.silent)?;
-        let data_nodes = DataNodeManager::new(log_mgr.clone());
+        let data_nodes = Arc::new(DataNodeManager::new(log_mgr.clone()));
 
         Ok(NameNodeService {
             host: HostAddr {
@@ -239,6 +264,8 @@ impl NameNodeService {
             data_nodes,
             log_mgr,
             message_size: config.message_size.as_usize(),
+            heartbeat_timeout: config.name_node.heartbeat_timeout,
+            heartbeat_recheck_interval: config.name_node.heartbeat_recheck_interval,
         })
     }
 
@@ -261,6 +288,38 @@ impl NameNodeService {
             )
         });
 
+        let reaper_nodes = Arc::clone(&self.data_nodes);
+        let reaper_logger = self.log_mgr.clone();
+        let reaper_timeout = self.heartbeat_timeout;
+        let reaper_interval = self.heartbeat_recheck_interval;
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        // name node reaper service
+        //  => periodically removes data nodes that have
+        //     not sent a heartbeat within the timeout threshold
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(reaper_interval));
+
+            loop {
+                interval.tick().await;
+
+                match reaper_nodes.get_stale_nodes(reaper_timeout).await {
+                    Ok(nodes) => {
+                        for node in &nodes {
+                            reaper_nodes.remove_conn(node).await;
+                        }
+                    }
+                    Err(_) => {
+                        reaper_logger.write(LogLevel::Error, || {
+                            "Error checking for stale nodes. Shutting down service.".to_string()
+                        });
+                        let _ = shutdown_tx.send(());
+                        return;
+                    }
+                };
+            }
+        });
+
         health_rep
             .set_serving::<NameNodeServer<NameNodeService>>()
             .await;
@@ -268,7 +327,9 @@ impl NameNodeService {
         let res = Server::builder()
             .add_service(health_svc)
             .add_service(NameNodeServer::new(self))
-            .serve(addr)
+            .serve_with_shutdown(addr, async {
+                let _ = shutdown_rx.await;
+            })
             .await
             .map_err(|e| {
                 let err = RustDFSError::TonicError(e);

@@ -6,6 +6,7 @@
  */
 mod args;
 mod files;
+mod nodes;
 mod service;
 
 use args::RustDFSArgs;

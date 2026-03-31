@@ -7,7 +7,11 @@ host = "namenode"
 port = 5000
 name-dir = "/var/lib/rustdfs/names"
 log-file = "/var/log/rustdfs/namenode.log"
+heartbeat-timeout = 30
+heartbeat-recheck-interval = 5
 
 [data-node]
 data-dir = "/var/lib/rustdfs/data"
 log-file = "/var/log/rustdfs/datanode.log"
+heartbeat-interval = 3
+replica-connection-ttl = 300

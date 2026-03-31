@@ -12,12 +12,12 @@ use tokio::sync::RwLock;
 use tonic::Status;
 use uuid::Uuid;
 
+use crate::nodes::DataNodeManager;
 use rustdfs_proto::persist::journal_entry::Op;
 use rustdfs_proto::persist::{
     BlockEntry, Checkpoint, FileEntry, FileStatus, JournalEntry, WriteCompleteEntry,
     WriteStartEntry,
 };
-use rustdfs_shared::conn::DataNodeManager;
 use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
 use rustdfs_shared::result::{Result, ServiceResult};
@@ -138,12 +138,12 @@ impl FileManager {
         let journal_path = name_dir.join(JOURNAL_FILE);
         let mut records = Self::load_checkpoint(&checkpoint_path, &log_mgr)?;
         let journal_txn_id = Self::replay_journal(&mut records.files, &journal_path, &log_mgr)?;
+        let file_count: usize = records.files.len();
 
         if journal_txn_id > records.txn_id {
             records.txn_id = journal_txn_id;
         }
 
-        let file_count: usize = records.files.len();
         log_mgr.write(LogLevel::Info, || {
             format!(
                 "Loaded namespace: {} files, txn_id={}",
@@ -153,7 +153,7 @@ impl FileManager {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(rustdfs_shared::error::RustDFSError::SystemTimeError)?
+            .map_err(RustDFSError::SystemTimeError)?
             .as_secs();
 
         Ok(FileManager {
