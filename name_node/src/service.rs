@@ -1,11 +1,12 @@
 use rand::seq::SliceRandom;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tonic::transport::Server;
 use tonic::{Request, Response};
 use tonic_health::server as health_server;
 
-use crate::conn::DataNodeManager;
+use crate::nodes::DataNodeManager;
 use rustdfs_proto::name::name_node_server::NameNode;
 use rustdfs_proto::name::name_node_server::NameNodeServer;
 use rustdfs_proto::name::{
@@ -228,6 +229,7 @@ impl NameNode for NameNodeService {
         request: Request<HeartbeatRequest>,
     ) -> ServiceResult<Response<HeartbeatResponse>> {
         let req = request.into_inner();
+
         self.data_nodes.record_heartbeat(&req.host).await;
         Ok(Response::new(HeartbeatResponse {}))
     }
@@ -286,22 +288,35 @@ impl NameNodeService {
             )
         });
 
-        // Spawn the heartbeat reaper task.
         let reaper_nodes = Arc::clone(&self.data_nodes);
         let reaper_logger = self.log_mgr.clone();
         let reaper_timeout = self.heartbeat_timeout;
         let reaper_interval = self.heartbeat_recheck_interval;
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        // name node reaper service
+        //  => periodically removes data nodes that have
+        //     not sent a heartbeat within the timeout threshold
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(reaper_interval));
+
             loop {
                 interval.tick().await;
-                let stale = reaper_nodes.get_stale_nodes(reaper_timeout).await;
-                for host in stale {
-                    reaper_logger.write(LogLevel::Error, || {
-                        format!("Data node {} declared dead (heartbeat timeout)", host)
-                    });
-                    reaper_nodes.remove_conn(&host).await;
-                }
+
+                match reaper_nodes.get_stale_nodes(reaper_timeout).await {
+                    Ok(nodes) => {
+                        for node in &nodes {
+                            reaper_nodes.remove_conn(node).await;
+                        }
+                    }
+                    Err(_) => {
+                        reaper_logger.write(LogLevel::Error, || {
+                            "Error checking for stale nodes. Shutting down service.".to_string()
+                        });
+                        let _ = shutdown_tx.send(());
+                        return;
+                    }
+                };
             }
         });
 
@@ -312,7 +327,9 @@ impl NameNodeService {
         let res = Server::builder()
             .add_service(health_svc)
             .add_service(NameNodeServer::new(self))
-            .serve(addr)
+            .serve_with_shutdown(addr, async {
+                let _ = shutdown_rx.await;
+            })
             .await
             .map_err(|e| {
                 let err = RustDFSError::TonicError(e);

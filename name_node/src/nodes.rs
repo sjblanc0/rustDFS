@@ -1,3 +1,4 @@
+use rustdfs_shared::error::RustDFSError;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
@@ -7,7 +8,7 @@ use rustdfs_proto::data::data_node_client::DataNodeClient;
 use rustdfs_shared::conn::DataNodeConn;
 use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
-use rustdfs_shared::result::ServiceResult;
+use rustdfs_shared::result::{Result, ServiceResult};
 
 /**
  * Manages gRPC client connections to data nodes on the name node.
@@ -83,6 +84,7 @@ impl DataNodeManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+
         self.last_heartbeat
             .write()
             .await
@@ -97,8 +99,9 @@ impl DataNodeManager {
     pub async fn remove_conn(&self, host: &str) {
         self.connections.write().await.remove(host);
         self.last_heartbeat.write().await.remove(host);
+
         self.log_mgr.write(LogLevel::Info, || {
-            format!("Removed data node connection: {}", host)
+            format!("Removed stale data node connection: {}", host)
         });
     }
 
@@ -108,17 +111,24 @@ impl DataNodeManager {
      *  @param timeout - Max seconds since last heartbeat before a node is stale.
      *  @return Vec<String> - Hostnames of stale nodes.
      */
-    pub async fn get_stale_nodes(&self, timeout: u64) -> Vec<String> {
+    pub async fn get_stale_nodes(&self, timeout: u64) -> Result<Vec<String>> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
+            .map_err(|e| {
+                let err = RustDFSError::SystemTimeError(e);
+                self.log_mgr.write_err(&err);
+                err
+            })?
             .as_secs();
-        let heartbeats = self.last_heartbeat.read().await;
-        heartbeats
+
+        Ok(self
+            .last_heartbeat
+            .read()
+            .await
             .iter()
             .filter(|(_, ts)| now.saturating_sub(**ts) > timeout)
             .map(|(host, _)| host.clone())
-            .collect()
+            .collect::<Vec<String>>())
     }
 
     /**

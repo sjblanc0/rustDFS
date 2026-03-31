@@ -7,10 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::join;
+
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{self};
+use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinSet};
+use tokio::time;
 use tokio_retry2::strategy::{ExponentialBackoff, jitter};
 use tokio_retry2::{Retry, RetryError};
 use tokio_stream::StreamExt;
@@ -20,7 +22,6 @@ use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 use tonic_health::server::{self as health_server, HealthReporter};
 
-use crate::conn::DataNodeManager;
 use rustdfs_proto::data::data_node_server::{DataNode, DataNodeServer};
 use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
 use rustdfs_proto::name::name_node_client::NameNodeClient;
@@ -33,6 +34,7 @@ use rustdfs_shared::result::{Result, ServiceResult};
 
 use crate::args::RustDFSArgs;
 use crate::blocks::BlockManager;
+use crate::nodes::DataNodeManager;
 
 type WriteStream = Pin<Box<dyn Stream<Item = ServiceResult<()>> + Send>>;
 type ReadStream = Pin<Box<dyn Stream<Item = ServiceResult<ReadResponse>> + Send>>;
@@ -351,51 +353,60 @@ impl DataNodeService {
             )
         });
 
-        let host = self.host.clone();
-        let name_host = self.name_host.clone();
-        let heartbeat_interval = self.heartbeat_interval;
-
-        // Spawn the replication connection TTL reaper task.
+        let reaper_logger = logger.clone();
         let reaper_nodes = Arc::clone(&self.data_nodes);
         let reaper_ttl = self.replica_connection_ttl;
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        // task to reap stale replica connections
+        // TTL configured in TOML config
         tokio::spawn(async move {
-            // Recheck at half the TTL, at least every 30 seconds.
             let recheck = (reaper_ttl / 2).clamp(1, 30);
             let mut interval = tokio::time::interval(Duration::from_secs(recheck));
+
             loop {
                 interval.tick().await;
-                reaper_nodes.remove_stale(reaper_ttl).await;
+
+                if reaper_nodes.remove_stale(reaper_ttl).await.is_err() {
+                    reaper_logger.write(LogLevel::Error, || {
+                        "Error reaping stale replicas. Shutting down service.".to_string()
+                    });
+
+                    let _ = shutdown_tx.send(());
+                    return;
+                }
             }
         });
 
-        health_rep
-            .set_serving::<DataNodeServer<DataNodeService>>()
-            .await;
+        // manages name node lifecycle:
+        //  => connect, register, heartbeat,
+        //     re-register on failure
+        tokio::spawn(name_node_lifecycle(
+            logger.clone(),
+            health_rep.clone(),
+            self.host.clone(),
+            self.name_host.clone(),
+            self.heartbeat_interval,
+        ));
 
-        let res = join!(
-            Server::builder()
-                .add_service(health_svc)
-                .add_service(DataNodeServer::new(self))
-                .serve(addr)
-                .map_err(|e| {
-                    let err = RustDFSError::TonicError(e);
-                    logger.write_err(&err);
-                    err
-                }),
-            name_node_lifecycle(
-                logger.clone(),
-                health_rep.clone(),
-                host,
-                name_host,
-                heartbeat_interval,
-            ),
-        );
+        let res = Server::builder()
+            .add_service(health_svc)
+            .add_service(DataNodeServer::new(self))
+            .serve_with_shutdown(addr, async {
+                let _ = shutdown_rx.await;
+            })
+            .map_err(|e| {
+                let err = RustDFSError::TonicError(e);
+                logger.write_err(&err);
+                err
+            })
+            .await;
 
         health_rep
             .set_not_serving::<DataNodeServer<DataNodeService>>()
             .await;
 
-        res.0?;
+        res?;
         Ok(())
     }
 }
@@ -416,37 +427,61 @@ async fn name_node_lifecycle(
     host: HostAddr,
     name_host: HostAddr,
     heartbeat_interval: u64,
-) {
+) -> RetryResult<()> {
+    let mut interval = time::interval(Duration::from_secs(heartbeat_interval));
+
+    let retry_strat = ExponentialBackoff::from_millis(100)
+        .factor(2)
+        .max_delay_millis(5000)
+        .map(jitter);
+
     loop {
-        // Phase 1: Connect and register with exponential backoff (retries indefinitely).
-        let retry_strat = ExponentialBackoff::from_millis(100)
-            .factor(2)
-            .max_delay_millis(5000)
-            .map(jitter);
+        health_rep
+            .set_not_serving::<DataNodeServer<DataNodeService>>()
+            .await;
 
-        // Retry::spawn on an infinite iterator only resolves on success.
-        let mut client = Retry::spawn(retry_strat, || {
-            connect_and_register(
-                logger.clone(),
-                health_rep.clone(),
-                host.clone(),
-                name_host.clone(),
-            )
+        let retry_res = Retry::spawn(retry_strat.clone(), || {
+            name_node_conn(&logger, &host, &name_host)
         })
-        .await
-        .expect("infinite retry strategy yielded an error");
+        .await;
 
-        // Phase 2: Heartbeat loop — runs until the name node becomes unreachable.
+        let mut client = match retry_res {
+            Ok(client) => {
+                logger.write(LogLevel::Info, || {
+                    format!(
+                        "Registered with NameNode at {}:{}",
+                        name_host.hostname, name_host.port
+                    )
+                });
+
+                client
+            }
+            Err(_e) => {
+                logger.write(LogLevel::Error, || {
+                    format!(
+                        "Failed to connect to NameNode at {}:{}. Retrying...",
+                        name_host.hostname, name_host.port
+                    )
+                });
+
+                continue;
+            }
+        };
+
+        health_rep
+            .set_serving::<DataNodeServer<DataNodeService>>()
+            .await;
+
         logger.write(LogLevel::Info, || {
             format!(
-                "Starting heartbeat loop (interval={}s) to {}:{}",
+                "Starting heartbeat loop (interval = {}s) to {}:{}",
                 heartbeat_interval, name_host.hostname, name_host.port
             )
         });
 
-        let mut interval = tokio::time::interval(Duration::from_secs(heartbeat_interval));
         loop {
             interval.tick().await;
+
             let result = client
                 .heartbeat(HeartbeatRequest {
                     host: host.hostname.clone(),
@@ -455,16 +490,14 @@ async fn name_node_lifecycle(
                 .await;
 
             if let Err(e) = result {
+                logger.write_status(&e);
+
                 logger.write(LogLevel::Error, || {
                     format!(
                         "Heartbeat to {}:{} failed: {}. Re-registering...",
                         name_host.hostname, name_host.port, e
                     )
                 });
-
-                health_rep
-                    .set_not_serving::<DataNodeServer<DataNodeService>>()
-                    .await;
 
                 break;
             }
@@ -477,70 +510,42 @@ async fn name_node_lifecycle(
  * Returns the connected client for reuse in the heartbeat loop.
  *
  *  @param logger - LogManager for logging.
- *  @param health_rep - HealthReporter for service health status.
  *  @param host - HostAddr of this Data Node.
  *  @param name_host - HostAddr of the Name Node.
  *  @return RetryResult<NameNodeClient<Channel>> - Connected client or transient error.
  */
-async fn connect_and_register(
-    logger: LogManager,
-    health_rep: HealthReporter,
-    host: HostAddr,
-    name_host: HostAddr,
+async fn name_node_conn(
+    logger: &LogManager,
+    host: &HostAddr,
+    name_host: &HostAddr,
 ) -> RetryResult<NameNodeClient<Channel>> {
-    let endpoint = name_host.to_endpoint(&logger)?;
-    let client = NameNodeClient::connect(endpoint).await;
+    let endpoint = name_host.to_endpoint(logger)?;
+    let conn_res = NameNodeClient::connect(endpoint).await;
 
-    if client.is_err() {
-        let orig = client.err().unwrap();
-        let err = RustDFSError::TonicError(orig);
+    let mut client = match conn_res {
+        Ok(client) => client,
+        Err(e) => {
+            let err = RustDFSError::TonicError(e);
+            logger.write_err(&err);
+            RetryError::to_transient(err)?
+        }
+    };
 
-        logger.write_err(&err);
-        logger.write(LogLevel::Error, || {
-            format!(
-                "Failed to connect to NameNode at {}:{}. Retrying...",
-                name_host.hostname, name_host.port
-            )
-        });
-
-        return RetryError::to_transient(err);
-    }
-
-    let mut client = client.unwrap();
-    let res = client
+    let register_res = client
         .register(RegisterRequest {
             host: host.hostname.clone(),
             port: host.port as u32,
         })
         .await;
 
-    if res.is_err() {
-        let orig = res.err().unwrap();
-        let err = RustDFSError::TonicStatusError(orig);
-
-        logger.write_err(&err);
-        logger.write(LogLevel::Error, || {
-            format!(
-                "Failed to register with NameNode at {}:{}. Retrying...",
-                name_host.hostname, name_host.port
-            )
-        });
-
-        return RetryError::to_transient(err);
+    match register_res {
+        Ok(_) => Ok(client),
+        Err(e) => {
+            let err = RustDFSError::TonicStatusError(e);
+            logger.write_err(&err);
+            RetryError::to_transient(err)?
+        }
     }
-
-    health_rep
-        .set_serving::<DataNodeServer<DataNodeService>>()
-        .await;
-
-    logger.write(LogLevel::Info, || {
-        format!(
-            "Registered with NameNode at {}:{}",
-            name_host.hostname, name_host.port
-        )
-    });
-
-    Ok(client)
 }
 
 // Retrieves the hostname of the current machine.

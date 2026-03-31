@@ -5,9 +5,10 @@ use tonic::Status;
 
 use rustdfs_proto::data::data_node_client::DataNodeClient;
 use rustdfs_shared::conn::DataNodeConn;
+use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::host::HostAddr;
 use rustdfs_shared::logging::{LogLevel, LogManager};
-use rustdfs_shared::result::ServiceResult;
+use rustdfs_shared::result::{Result, ServiceResult};
 
 /**
  * Manages gRPC client connections to peer data nodes for replication.
@@ -113,10 +114,14 @@ impl DataNodeManager {
      *
      *  @param ttl - Max seconds since last use before a connection is evicted.
      */
-    pub async fn remove_stale(&self, ttl: u64) {
+    pub async fn remove_stale(&self, ttl: u64) -> Result<()> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
+            .map_err(|e| {
+                let err = RustDFSError::SystemTimeError(e);
+                self.log_mgr.write_err(&err);
+                err
+            })?
             .as_secs();
 
         let stale: Vec<String> = {
@@ -129,26 +134,31 @@ impl DataNodeManager {
         };
 
         if stale.is_empty() {
-            return;
+            return Ok(());
         }
 
         let mut conns = self.connections.write().await;
         let mut timestamps = self.last_used.write().await;
+
         for host in &stale {
             conns.remove(host);
             timestamps.remove(host);
+
             self.log_mgr.write(LogLevel::Info, || {
                 format!("Evicted idle replication connection: {}", host)
             });
         }
+
+        Ok(())
     }
 
-    // Updates the last-used timestamp for a host.
+    // update last-used timestamp for a host.
     async fn touch(&self, host: &str) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+
         self.last_used.write().await.insert(host.to_string(), now);
     }
 }

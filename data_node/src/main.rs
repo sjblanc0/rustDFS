@@ -7,7 +7,7 @@
  */
 mod args;
 mod blocks;
-mod conn;
+mod nodes;
 mod service;
 
 use args::RustDFSArgs;
