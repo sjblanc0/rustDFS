@@ -1,0 +1,120 @@
+name: rustdfs-blockreport
+
+networks:
+  rustdfs:
+    driver: bridge
+
+volumes:
+  dn0-data:
+  dn1-data:
+  dn2-data:
+
+services:
+
+  # ── data nodes ──────────────────────────────────────────────────────────────
+
+  datanode0:
+    build:
+      context: ../..
+      dockerfile: example/blockreport/Dockerfile.datanode
+      args:
+        PORT: 5001
+    hostname: datanode0
+    environment:
+      PORT: 5001
+    ports:
+      - "5001:5001"
+    volumes:
+      - dn0-data:/var/lib/rustdfs/data
+    networks:
+      - rustdfs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=datanode0:5001"]
+      interval: 5s
+      retries: 20
+    depends_on:
+      namenode:
+        condition: service_healthy
+
+  datanode1:
+    build:
+      context: ../..
+      dockerfile: example/blockreport/Dockerfile.datanode
+      args:
+        PORT: 5002
+    hostname: datanode1
+    environment:
+      PORT: 5002
+    ports:
+      - "5002:5002"
+    volumes:
+      - dn1-data:/var/lib/rustdfs/data
+    networks:
+      - rustdfs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=datanode1:5002"]
+      interval: 5s
+      retries: 20
+    depends_on:
+      namenode:
+        condition: service_healthy
+
+  datanode2:
+    build:
+      context: ../..
+      dockerfile: example/blockreport/Dockerfile.datanode
+      args:
+        PORT: 5003
+    hostname: datanode2
+    environment:
+      PORT: 5003
+    ports:
+      - "5003:5003"
+    volumes:
+      - dn2-data:/var/lib/rustdfs/data
+    networks:
+      - rustdfs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=datanode2:5003"]
+      interval: 5s
+      retries: 20
+    depends_on:
+      namenode:
+        condition: service_healthy
+
+  # ── name node ───────────────────────────────────────────────────────────────
+
+  namenode:
+    build:
+      context: ../..
+      dockerfile: example/blockreport/Dockerfile.namenode
+    hostname: namenode
+    ports:
+      - "5000:5000"
+    networks:
+      - rustdfs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=namenode:5000"]
+      interval: 5s
+      retries: 20
+
+  # ── client ──────────────────────────────────────────────────────────────────
+
+  client:
+    build:
+      context: ../..
+      dockerfile: example/blockreport/Dockerfile.client
+    hostname: client
+    networks:
+      - rustdfs
+    environment:
+      MODE: write
+    entrypoint: ["/usr/local/bin/client.sh"]
+    depends_on:
+      datanode0:
+        condition: service_healthy
+      datanode1:
+        condition: service_healthy
+      datanode2:
+        condition: service_healthy
+    tty: true

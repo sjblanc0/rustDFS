@@ -117,7 +117,7 @@ impl RustDFSClient {
         let mut err = None;
         let reader = reader(&self.source, start_res.message_size as usize).await?;
 
-        'outer: for block in &start_res.blocks {
+        'outer: for (block_idx, block) in start_res.blocks.iter().enumerate() {
             let data_host = to_host_addr(&block.nodes[0]);
             let mut data = data_client(&data_host, &self.out).await?;
 
@@ -127,6 +127,7 @@ impl RustDFSClient {
             let reader = reader.clone();
             let out_a = self.out.clone();
             let out_b = self.out.clone();
+            let dest = self.dest.clone();
 
             let mut out_stream = data
                 .write(in_stream)
@@ -161,6 +162,9 @@ impl RustDFSClient {
                                     block_id: block.block_id.clone(),
                                     data: buf[..n].to_vec(),
                                     replicas: to_replica_nodes(&block.nodes[1..]),
+                                    file_name: dest.clone(),
+                                    block_index: block_idx as u32,
+                                    block_size: block.block_size,
                                 };
 
                                 tx.send(req).await.map_err(|e| {

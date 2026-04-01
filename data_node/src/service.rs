@@ -25,7 +25,7 @@ use tonic_health::server::{self as health_server, HealthReporter};
 use rustdfs_proto::data::data_node_server::{DataNode, DataNodeServer};
 use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
 use rustdfs_proto::name::name_node_client::NameNodeClient;
-use rustdfs_proto::name::{HeartbeatRequest, RegisterRequest};
+use rustdfs_proto::name::{BlockInfo, BlockReportRequest, HeartbeatRequest, RegisterRequest};
 use rustdfs_shared::config::RustDFSConfig;
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::host::HostAddr;
@@ -112,9 +112,21 @@ impl DataNode for DataNodeService {
         let mut tasks = JoinSet::new();
 
         tasks.spawn(async move {
+            let mut meta_saved = false;
+
             while let Some(res) = req_stream.next().await {
                 match res {
                     Ok(req) => {
+                        if !meta_saved && !req.file_name.is_empty() {
+                            let meta = crate::blocks::BlockMeta {
+                                file_name: req.file_name.clone(),
+                                block_index: req.block_index,
+                                block_size: req.block_size,
+                            };
+                            block_mgr.save_meta(&req.block_id, &meta)?;
+                            meta_saved = true;
+                        }
+
                         let mut writer = block_mgr.write_buf(&req.block_id, msg_size).await?;
 
                         writer.write(&req.data).await.map_err(status_err_writing)?;
@@ -140,6 +152,9 @@ impl DataNode for DataNodeService {
                                     block_id: req.block_id.clone(),
                                     data: req.data,
                                     replicas: req.replicas[1..].to_vec(),
+                                    file_name: req.file_name,
+                                    block_index: req.block_index,
+                                    block_size: req.block_size,
                                 };
 
                                 if !tx_init_a.is_closed() {
@@ -387,6 +402,7 @@ impl DataNodeService {
             self.host.clone(),
             self.name_host.clone(),
             self.heartbeat_interval,
+            self.data_mgr.clone(),
         ));
 
         let res = Server::builder()
@@ -427,6 +443,7 @@ async fn name_node_lifecycle(
     host: HostAddr,
     name_host: HostAddr,
     heartbeat_interval: u64,
+    block_mgr: BlockManager,
 ) -> RetryResult<()> {
     let mut interval = time::interval(Duration::from_secs(heartbeat_interval));
 
@@ -467,6 +484,39 @@ async fn name_node_lifecycle(
                 continue;
             }
         };
+
+        // send block report after registration
+        let blocks: Vec<BlockInfo> = block_mgr
+            .scan_blocks()
+            .into_iter()
+            .map(|(id, meta)| BlockInfo {
+                block_id: id,
+                file_name: meta.file_name,
+                block_index: meta.block_index,
+                block_size: meta.block_size,
+            })
+            .collect();
+
+        if !blocks.is_empty() {
+            logger.write(LogLevel::Info, || {
+                format!("Sending block report with {} blocks", blocks.len())
+            });
+
+            if let Err(e) = client
+                .block_report(BlockReportRequest {
+                    host: host.hostname.clone(),
+                    port: host.port as u32,
+                    blocks,
+                })
+                .await
+            {
+                logger.write_status(&e);
+                logger.write(LogLevel::Error, || {
+                    "Block report failed. Re-registering...".to_string()
+                });
+                continue;
+            }
+        }
 
         health_rep
             .set_serving::<DataNodeServer<DataNodeService>>()

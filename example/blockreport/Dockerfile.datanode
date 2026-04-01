@@ -1,0 +1,34 @@
+# ── build stage ──────────────────────────────────────────────────────────────
+FROM rust:1.92.0-trixie AS builder
+
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+RUN cargo build --release --bin rustDFS-datanode
+
+# ── runtime stage ─────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y \
+        ca-certificates \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN wget \
+    -qO/usr/local/bin/grpc_health_probe \
+    https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/v0.4.20/grpc_health_probe-linux-amd64
+
+RUN chmod +x /usr/local/bin/grpc_health_probe
+
+RUN mkdir -p /etc/rustdfs /var/log/rustdfs /var/lib/rustdfs/data
+
+COPY --from=builder /build/target/release/rustDFS-datanode /usr/local/bin/rustDFS-datanode
+COPY example/blockreport/rdfsconf.toml /etc/rustdfs/rdfsconf.toml
+
+ARG PORT=5001
+
+EXPOSE 5001
+
+ENTRYPOINT ["sh", "-c", "rustDFS-datanode --port $PORT"]
