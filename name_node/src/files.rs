@@ -13,6 +13,7 @@ use tonic::Status;
 use uuid::Uuid;
 
 use crate::nodes::DataNodeManager;
+use rustdfs_proto::name::BlockInfo;
 use rustdfs_proto::persist::journal_entry::Op;
 use rustdfs_proto::persist::{
     BlockEntry, Checkpoint, FileEntry, FileStatus, JournalEntry, WriteCompleteEntry,
@@ -385,6 +386,80 @@ impl FileManager {
         let err = status_file_not_found(file_name);
         self.log_mgr.write_status(&err);
         Err(err)
+    }
+
+    /**
+     * Rebuilds file descriptors from a data node's block report.
+     * Groups reported blocks by file name, orders them by block index,
+     * and creates or merges into existing [FileDescriptor] entries.
+     *
+     * For files already tracked (from checkpoint/journal), only the node
+     * lists are updated. For unknown files (full restart with empty
+     * namespace), new completed file descriptors are created.
+     *
+     *  @param host - [HostAddr] of the reporting data node.
+     *  @param blocks - Slice of [BlockInfo] from the block report.
+     */
+    pub async fn rebuild_from_report(&self, host: &HostAddr, blocks: &[BlockInfo]) {
+        // group blocks by file name
+        let mut by_file: HashMap<String, Vec<&BlockInfo>> = HashMap::new();
+        for info in blocks {
+            by_file
+                .entry(info.file_name.clone())
+                .or_default()
+                .push(info);
+        }
+
+        let mut files = self.files.write().await;
+
+        for (file_name, mut file_blocks) in by_file {
+            file_blocks.sort_by_key(|b| b.block_index);
+
+            let deque = files.entry(file_name.clone()).or_default();
+
+            // find the latest completed descriptor if one exists
+            let existing = deque
+                .iter_mut()
+                .rev()
+                .find(|d| matches!(d.status, WriteStatus::Complete));
+
+            match existing {
+                Some(desc) => {
+                    // merge node info into existing block descriptors
+                    for info in &file_blocks {
+                        if let Some(bd) = desc.blocks.iter_mut().find(|b| b.id == info.block_id)
+                            && !bd.nodes.iter().any(|n| n.hostname == host.hostname)
+                        {
+                            bd.nodes.push(host.clone());
+                        }
+                    }
+                }
+                None => {
+                    // create a new completed file descriptor from the report
+                    let block_descs: Vec<BlockDescriptor> = file_blocks
+                        .iter()
+                        .map(|info| BlockDescriptor {
+                            id: info.block_id.clone(),
+                            size: info.block_size,
+                            nodes: vec![host.clone()],
+                        })
+                        .collect();
+
+                    deque.push_back(FileDescriptor {
+                        status: WriteStatus::Complete,
+                        blocks: block_descs,
+                    });
+
+                    self.log_mgr.write(LogLevel::Info, || {
+                        format!(
+                            "Reconstructed file '{}' from block report ({} blocks)",
+                            file_name,
+                            file_blocks.len()
+                        )
+                    });
+                }
+            }
+        }
     }
 
     /**

@@ -10,9 +10,9 @@ use crate::nodes::DataNodeManager;
 use rustdfs_proto::name::name_node_server::NameNode;
 use rustdfs_proto::name::name_node_server::NameNodeServer;
 use rustdfs_proto::name::{
-    Block, HeartbeatRequest, HeartbeatResponse, ReadRequest, ReadResponse, RegisterRequest,
-    RenewLeaseRequest, RenewLeaseResponse, WriteEndRequest, WriteStartRequest, WriteStartResponse,
-    block::Node,
+    Block, BlockReportRequest, HeartbeatRequest, HeartbeatResponse, ReadRequest, ReadResponse,
+    RegisterRequest, RenewLeaseRequest, RenewLeaseResponse, WriteEndRequest, WriteStartRequest,
+    WriteStartResponse, block::Node,
 };
 use rustdfs_shared::config::RustDFSConfig;
 use rustdfs_shared::error::RustDFSError;
@@ -232,6 +232,39 @@ impl NameNode for NameNodeService {
 
         self.data_nodes.record_heartbeat(&req.host).await;
         Ok(Response::new(HeartbeatResponse {}))
+    }
+
+    /**
+     * Handles a block report from a data node.
+     * Rebuilds file descriptors from the reported block metadata
+     * so that files are recoverable after a full cluster restart.
+     *
+     *  @param request - [BlockReportRequest] with host, port, and block metadata.
+     *  @return ServiceResult<Response<()>> - Success.
+     */
+    async fn block_report(
+        &self,
+        request: Request<BlockReportRequest>,
+    ) -> ServiceResult<Response<()>> {
+        let req = request.into_inner();
+
+        let host = HostAddr {
+            hostname: req.host.clone(),
+            port: req.port as u16,
+        };
+
+        self.file_mgr.rebuild_from_report(&host, &req.blocks).await;
+
+        self.log_mgr.write(LogLevel::Info, || {
+            format!(
+                "Processed block report from {}:{} ({} blocks)",
+                req.host,
+                req.port,
+                req.blocks.len()
+            )
+        });
+
+        Ok(Response::new(()))
     }
 }
 

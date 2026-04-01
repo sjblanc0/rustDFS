@@ -13,6 +13,9 @@ message WriteRequest {
     string blockID = 1;
     bytes data = 2;
     repeated ReplicaNode replicas = 3;
+    string fileName = 4;
+    uint32 blockIndex = 5;
+    uint64 blockSize = 6;
 
     message ReplicaNode {
         string host = 1;
