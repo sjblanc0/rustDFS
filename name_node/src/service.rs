@@ -10,9 +10,9 @@ use crate::nodes::DataNodeManager;
 use rustdfs_proto::name::name_node_server::NameNode;
 use rustdfs_proto::name::name_node_server::NameNodeServer;
 use rustdfs_proto::name::{
-    Block, HeartbeatRequest, HeartbeatResponse, ReadRequest, ReadResponse, RegisterRequest,
-    RenewLeaseRequest, RenewLeaseResponse, WriteEndRequest, WriteStartRequest, WriteStartResponse,
-    block::Node,
+    Block, BlockReportRequest, BlockReportResponse, HeartbeatRequest, HeartbeatResponse,
+    ReadRequest, ReadResponse, RegisterRequest, RenewLeaseRequest, RenewLeaseResponse,
+    WriteEndRequest, WriteStartRequest, WriteStartResponse, block::Node,
 };
 use rustdfs_shared::config::RustDFSConfig;
 use rustdfs_shared::error::RustDFSError;
@@ -232,6 +232,46 @@ impl NameNode for NameNodeService {
 
         self.data_nodes.record_heartbeat(&req.host).await;
         Ok(Response::new(HeartbeatResponse {}))
+    }
+
+    /**
+     * Handles a block report from a data node.
+     * Updates block-to-node mappings so the name node knows which
+     * data nodes hold each block.
+     *
+     *  @param request - [BlockReportRequest] with host, port, and list of block IDs.
+     *  @return ServiceResult<Response<()>>
+     */
+    async fn block_report(
+        &self,
+        request: Request<BlockReportRequest>,
+    ) -> ServiceResult<Response<BlockReportResponse>> {
+        let req = request.into_inner();
+        let host = HostAddr {
+            hostname: req.host.clone(),
+            port: req.port as u16,
+        };
+
+        self.log_mgr.write(LogLevel::Info, || {
+            format!(
+                "Block report from {}:{} — {} blocks",
+                req.host,
+                req.port,
+                req.block_i_ds.len()
+            )
+        });
+
+        let stale = self.file_mgr.report_blocks(&host, &req.block_i_ds).await;
+
+        if !stale.is_empty() {
+            self.log_mgr.write(LogLevel::Info, || {
+                format!("Requesting deletion of {} stale blocks", stale.len())
+            });
+        }
+
+        Ok(Response::new(BlockReportResponse {
+            remove_block_ids: stale,
+        }))
     }
 }
 

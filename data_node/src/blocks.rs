@@ -2,12 +2,15 @@ use std::fs::{self};
 use std::io::Error as IoError;
 use std::path::Path;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncSeekExt, BufReader, BufWriter, SeekFrom};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter, SeekFrom};
 
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::logging::LogManager;
 use rustdfs_shared::result::{Result, ServiceResult};
 use tonic::Status;
+
+// Bytes written at start of block to identify format
+const BLOCK_HDR: &[u8; 4] = b"RDFS";
 
 /**
  * Manages local block storage for the data node.
@@ -54,11 +57,12 @@ impl BlockManager {
 
     /**
      * Opens a block file for reading with a buffered reader.
-     * Seeks to the specified byte offset before returning.
+     * Skips past the magic header, then seeks to the specified
+     * byte offset within the block data.
      *
      *  @param path - Block ID (file name within the data directory).
      *  @param buf_size - Buffer capacity in bytes.
-     *  @param offset - Byte offset to begin reading from.
+     *  @param offset - Byte offset into block data (0 = first data byte after header).
      *  @return ServiceResult<BufReader<File>> - Buffered reader or I/O error.
      */
     pub async fn read_buf(
@@ -78,18 +82,21 @@ impl BlockManager {
                 err
             })?;
 
-        file.seek(SeekFrom::Start(offset)).await.map_err(|e| {
-            let err = status_err_reading(path, e);
-            self.log_mgr.write_status(&err);
-            err
-        })?;
+        file.seek(SeekFrom::Start(BLOCK_HDR.len() as u64 + offset))
+            .await
+            .map_err(|e| {
+                let err = status_err_reading(path, e);
+                self.log_mgr.write_status(&err);
+                err
+            })?;
 
         Ok(BufReader::with_capacity(buf_size, file))
     }
 
     /**
      * Opens (or creates) a block file for writing with a buffered writer.
-     * Writes are appended to the file.
+     * If the file is newly created (empty), writes the magic header first.
+     * Subsequent calls append data after the header.
      *
      *  @param block_id - Block ID (file name within the data directory).
      *  @param buf_size - Buffer capacity in bytes.
@@ -114,7 +121,67 @@ impl BlockManager {
                 err
             })?;
 
-        Ok(BufWriter::with_capacity(buf_size, file))
+        let is_new = file.metadata().await.map(|m| m.len() == 0).unwrap_or(false);
+
+        let mut writer = BufWriter::with_capacity(buf_size, file);
+
+        if is_new {
+            writer
+                .write_all(BLOCK_HDR)
+                .await
+                .map_err(|e| status_err_writing(block_id, e))?;
+        }
+
+        Ok(writer)
+    }
+
+    /**
+     * Scans the data directory and returns the block ID (file name)
+     * of every file that matches the RDFS magic header.
+     *
+     *  @return Vec<String> - Verified block IDs found on disk.
+     */
+    pub fn scan_blocks(&self) -> Vec<String> {
+        use std::io::Read;
+
+        let mut results = Vec::new();
+        let entries = match fs::read_dir(&self.path) {
+            Ok(e) => e,
+            Err(_) => return results,
+        };
+
+        for entry in entries.flatten() {
+            if !entry.path().is_file() {
+                continue;
+            }
+
+            let ok = fs::File::open(entry.path())
+                .and_then(|mut f| {
+                    let mut magic = [0u8; 4];
+                    f.read_exact(&mut magic)?;
+                    Ok(magic == *BLOCK_HDR)
+                })
+                .unwrap_or(false);
+
+            if ok && let Some(name) = entry.file_name().to_str() {
+                results.push(name.to_string());
+            }
+        }
+
+        results
+    }
+
+    /**
+     * Deletes a block file from the data directory.
+     *
+     *  @param block_id - Block ID (file name) to remove.
+     */
+    pub fn delete_block(&self, block_id: &str) {
+        let block_path = format!("{}/{}", self.path, block_id);
+
+        if let Err(e) = fs::remove_file(&block_path) {
+            self.log_mgr.write_err(&RustDFSError::IoError(e));
+        }
     }
 }
 

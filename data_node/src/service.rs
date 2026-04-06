@@ -6,7 +6,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{self};
@@ -25,7 +26,7 @@ use tonic_health::server::{self as health_server, HealthReporter};
 use rustdfs_proto::data::data_node_server::{DataNode, DataNodeServer};
 use rustdfs_proto::data::{ReadRequest, ReadResponse, WriteRequest};
 use rustdfs_proto::name::name_node_client::NameNodeClient;
-use rustdfs_proto::name::{HeartbeatRequest, RegisterRequest};
+use rustdfs_proto::name::{BlockReportRequest, HeartbeatRequest, RegisterRequest};
 use rustdfs_shared::config::RustDFSConfig;
 use rustdfs_shared::error::RustDFSError;
 use rustdfs_shared::host::HostAddr;
@@ -112,14 +113,24 @@ impl DataNode for DataNodeService {
         let mut tasks = JoinSet::new();
 
         tasks.spawn(async move {
+            let mut writer: Option<BufWriter<File>> = None;
+
             while let Some(res) = req_stream.next().await {
                 match res {
                     Ok(req) => {
-                        let mut writer = block_mgr.write_buf(&req.block_id, msg_size).await?;
+                        let w = match writer.as_mut() {
+                            Some(w) => w,
+                            None => {
+                                let w = block_mgr.write_buf(&req.block_id, msg_size).await?;
 
-                        writer.write(&req.data).await.map_err(status_err_writing)?;
+                                writer = Some(w);
+                                writer.as_mut().unwrap()
+                            }
+                        };
 
-                        writer.flush().await.map_err(status_err_writing)?;
+                        w.write(&req.data).await.map_err(status_err_writing)?;
+
+                        w.flush().await.map_err(status_err_writing)?;
 
                         match req.replicas.len() {
                             0 => {
@@ -379,7 +390,7 @@ impl DataNodeService {
         });
 
         // manages name node lifecycle:
-        //  => connect, register, heartbeat,
+        //  => connect, register, block report, heartbeat,
         //     re-register on failure
         tokio::spawn(name_node_lifecycle(
             logger.clone(),
@@ -387,6 +398,7 @@ impl DataNodeService {
             self.host.clone(),
             self.name_host.clone(),
             self.heartbeat_interval,
+            self.data_mgr.clone(),
         ));
 
         let res = Server::builder()
@@ -412,7 +424,7 @@ impl DataNodeService {
 }
 
 /**
- * Manages the full Name Node lifecycle: connect, register, heartbeat, re-register.
+ * Manages the full Name Node lifecycle: connect, register, block report, heartbeat, re-register.
  * Runs in an infinite loop — on heartbeat failure, re-enters the registration path.
  *
  *  @param logger - LogManager for logging.
@@ -420,6 +432,7 @@ impl DataNodeService {
  *  @param host - HostAddr of this Data Node.
  *  @param name_host - HostAddr of the Name Node.
  *  @param heartbeat_interval - Seconds between heartbeat RPCs.
+ *  @param block_mgr - [BlockManager] for scanning locally stored blocks.
  */
 async fn name_node_lifecycle(
     logger: LogManager,
@@ -427,6 +440,7 @@ async fn name_node_lifecycle(
     host: HostAddr,
     name_host: HostAddr,
     heartbeat_interval: u64,
+    block_mgr: BlockManager,
 ) -> RetryResult<()> {
     let mut interval = time::interval(Duration::from_secs(heartbeat_interval));
 
@@ -467,6 +481,42 @@ async fn name_node_lifecycle(
                 continue;
             }
         };
+
+        // send block report after registration
+        let block_ids = block_mgr.scan_blocks();
+
+        if !block_ids.is_empty() {
+            logger.write(LogLevel::Info, || {
+                format!("Sending block report with {} blocks", block_ids.len())
+            });
+
+            match client
+                .block_report(BlockReportRequest {
+                    host: host.hostname.clone(),
+                    port: host.port as u32,
+                    block_i_ds: block_ids,
+                })
+                .await
+            {
+                Ok(resp) => {
+                    let to_delete = resp.into_inner().remove_block_ids;
+
+                    for id in &to_delete {
+                        logger.write(LogLevel::Info, || format!("Deleting stale block {}", id));
+
+                        block_mgr.delete_block(id);
+                    }
+                }
+                Err(e) => {
+                    logger.write_status(&e);
+                    logger.write(LogLevel::Error, || {
+                        "Blockreport failed. Re-registering...".to_string()
+                    });
+
+                    continue;
+                }
+            }
+        }
 
         health_rep
             .set_serving::<DataNodeServer<DataNodeService>>()
