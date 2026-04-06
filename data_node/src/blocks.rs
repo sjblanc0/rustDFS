@@ -137,7 +137,7 @@ impl BlockManager {
 
     /**
      * Scans the data directory and returns the block ID (file name)
-     * of every file whose first 4 bytes match the RDFS magic header.
+     * of every file that matches the RDFS magic header.
      *
      *  @return Vec<String> - Verified block IDs found on disk.
      */

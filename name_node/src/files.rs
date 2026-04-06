@@ -3,7 +3,6 @@ use prost::Message;
 use rand::seq::SliceRandom;
 use rustdfs_shared::error::RustDFSError;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
@@ -46,10 +45,12 @@ const CHECKPOINT_TMP: &str = "checkpoint.tmp";
  *  @field checkpoint_txns - Max journal entries before forcing a checkpoint.
  *  @field checkpoint_period - Max seconds between checkpoints.
  *  @field last_checkpoint - Epoch seconds of the most recent checkpoint.
+ *  @field block_nodes - Index from block ID to its location for O(1) lookups.
  */
 #[derive(Debug)]
 pub struct FileManager {
     files: RwLock<HashMap<String, VecDeque<FileDescriptor>>>,
+    block_nodes: RwLock<HashMap<String, BlockLocationIndex>>,
     log_mgr: LogManager,
     lease_duration: u32,
     replica_ct: usize,
@@ -79,13 +80,27 @@ pub struct FileDescriptor {
  *
  *  @field id - UUID string identifying this block.
  *  @field size - Maximum size of the block in bytes.
- *  @field nodes - Ordered list of [HostAddr]s: first is primary, rest are replicas.
+ *  @field nodes - List of [HostAddr]s (primary + replicas).
  */
 #[derive(Debug, Clone)]
 pub struct BlockDescriptor {
     pub id: String,
     pub size: u64,
     pub nodes: Vec<HostAddr>,
+}
+
+/**
+ * Coordinates locating a [BlockDescriptor] within the files map.
+ *
+ *  @field file_name - Key into the files [HashMap].
+ *  @field deque_index - Index into the [VecDeque] for that file.
+ *  @field block_index - Index into the [FileDescriptor]'s block list.
+ */
+#[derive(Debug, Clone)]
+pub struct BlockLocationIndex {
+    pub file_name: String,
+    pub deque_index: usize,
+    pub block_index: usize,
 }
 
 /**
@@ -157,8 +172,11 @@ impl FileManager {
             .map_err(RustDFSError::SystemTimeError)?
             .as_secs();
 
+        let block_nodes = Self::build_block_index(&records.files);
+
         Ok(FileManager {
             files: RwLock::new(records.files),
+            block_nodes: RwLock::new(block_nodes),
             log_mgr,
             lease_duration,
             replica_ct,
@@ -229,6 +247,35 @@ impl FileManager {
         };
 
         deque.push_back(desc.clone());
+
+        // clean up evicted blocks and fix indices
+        {
+            let mut idx = self.block_nodes.write().await;
+            if let Some(ref evicted_desc) = evicted {
+                for block in &evicted_desc.blocks {
+                    idx.remove(&block.id);
+                }
+                if evicted_front && let Some(front) = deque.front() {
+                    for (bi, block) in front.blocks.iter().enumerate() {
+                        if let Some(loc) = idx.get_mut(&block.id) {
+                            loc.deque_index = 0;
+                            loc.block_index = bi;
+                        }
+                    }
+                }
+            }
+            let deque_index = deque.len() - 1;
+            for (bi, block) in desc.blocks.iter().enumerate() {
+                idx.insert(
+                    block.id.clone(),
+                    BlockLocationIndex {
+                        file_name: file_name.to_string(),
+                        deque_index,
+                        block_index: bi,
+                    },
+                );
+            }
+        }
 
         let journal_entry = JournalEntry {
             txn_id: 0,
@@ -396,20 +443,28 @@ impl FileManager {
      *  @param host - [HostAddr] of the reporting data node.
      *  @param block_ids - Block IDs that the data node currently holds.
      */
-    pub async fn report_blocks(&self, host: &HostAddr, block_ids: &[String]) {
-        let id_set: HashSet<&str> = block_ids.iter().map(|s| s.as_str()).collect();
+    pub async fn report_blocks(&self, host: &HostAddr, block_ids: &[String]) -> ServiceResult<()> {
         let mut files = self.files.write().await;
+        let idx = self.block_nodes.read().await;
 
-        for deque in files.values_mut() {
-            for desc in deque.iter_mut() {
-                for block in &mut desc.blocks {
-                    if id_set.contains(block.id.as_str()) && !block.nodes.iter().any(|n| n == host)
-                    {
-                        block.nodes.push(host.clone());
-                    }
+        for id in block_ids {
+            if let Some(loc) = idx.get(id)
+                && let Some(deque) = files.get_mut(&loc.file_name)
+                && let Some(desc) = deque.get_mut(loc.deque_index)
+                && let Some(block) = desc.blocks.get_mut(loc.block_index)
+                && block.id == *id
+            {
+                if !block.nodes.iter().any(|n| n == host) {
+                    block.nodes.push(host.clone());
                 }
+            } else {
+                let err = status_unknown_block_reported(id);
+                self.log_mgr.write_status(&err);
+                return Err(err);
             }
         }
+
+        Ok(())
     }
 
     /**
@@ -442,6 +497,30 @@ impl FileManager {
             .collect::<ServiceResult<Vec<BlockDescriptor>>>()
     }
 
+    /// Builds the flat block-id → location index from the file map.
+    fn build_block_index(
+        files: &HashMap<String, VecDeque<FileDescriptor>>,
+    ) -> HashMap<String, BlockLocationIndex> {
+        let mut index = HashMap::new();
+
+        for (file_name, deque) in files {
+            for (di, desc) in deque.iter().enumerate() {
+                for (bi, block) in desc.blocks.iter().enumerate() {
+                    index.insert(
+                        block.id.clone(),
+                        BlockLocationIndex {
+                            file_name: file_name.clone(),
+                            deque_index: di,
+                            block_index: bi,
+                        },
+                    );
+                }
+            }
+        }
+
+        index
+    }
+
     // randomly selects a primary data node and replica nodes
     // for write operation
     async fn select_nodes(&self, data_nodes: &DataNodeManager) -> ServiceResult<Vec<HostAddr>> {
@@ -470,6 +549,7 @@ impl FileManager {
                 err
             })?
             .as_secs();
+
         Ok(time)
     }
 
@@ -794,6 +874,11 @@ fn err_replay_nonexistent_file(file_name: &str) -> RustDFSError {
         file_name
     );
     RustDFSError::CustomError(msg)
+}
+
+fn status_unknown_block_reported(id: &str) -> Status {
+    let msg = format!("Block report contains ID: {}", id);
+    Status::not_found(msg)
 }
 
 fn status_writing_journal(e: std::io::Error) -> Status {

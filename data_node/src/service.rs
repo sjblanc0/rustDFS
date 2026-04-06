@@ -119,9 +119,7 @@ impl DataNode for DataNodeService {
                 match res {
                     Ok(req) => {
                         let w = match writer.as_mut() {
-                            Some(w) => {
-                                w
-                            }
+                            Some(w) => w,
                             None => {
                                 let w = block_mgr.write_buf(&req.block_id, msg_size).await?;
 
@@ -502,8 +500,9 @@ async fn name_node_lifecycle(
             {
                 logger.write_status(&e);
                 logger.write(LogLevel::Error, || {
-                    "Block report failed. Re-registering...".to_string()
+                    "Blockreport failed. Re-registering...".to_string()
                 });
+
                 continue;
             }
         }
