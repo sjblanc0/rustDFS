@@ -10,9 +10,10 @@ use crate::nodes::DataNodeManager;
 use rustdfs_proto::name::name_node_server::NameNode;
 use rustdfs_proto::name::name_node_server::NameNodeServer;
 use rustdfs_proto::name::{
-    Block, BlockReportRequest, BlockReportResponse, HeartbeatRequest, HeartbeatResponse,
-    ReadRequest, ReadResponse, RegisterRequest, RenewLeaseRequest, RenewLeaseResponse,
-    WriteEndRequest, WriteStartRequest, WriteStartResponse, block::Node,
+    AddBlockRequest, AddBlockResponse, Block, BlockReportRequest, BlockReportResponse,
+    HeartbeatRequest, HeartbeatResponse, ReadRequest, ReadResponse, RegisterRequest,
+    RenewLeaseRequest, RenewLeaseResponse, WriteEndRequest, WriteStartRequest, WriteStartResponse,
+    block::Node,
 };
 use rustdfs_shared::config::RustDFSConfig;
 use rustdfs_shared::error::RustDFSError;
@@ -57,11 +58,10 @@ impl NameNode for NameNodeService {
 
     /**
      * Initiates a file write.
-     * Allocates blocks across data nodes and acquires a write lease.
-     * Returns block assignments and the lease expiry timestamp.
+     * Acquires a write lease and returns lease info and block/message sizes.
      *
-     *  @param request - [WriteStartRequest] with file name, size, and operation ID.
-     *  @return ServiceResult<Response<WriteStartResponse>> - Block assignments and lease info.
+     *  @param request - [WriteStartRequest] with file name and operation ID.
+     *  @return ServiceResult<Response<WriteStartResponse>> - Lease info and sizes.
      */
     async fn write_start(
         &self,
@@ -69,14 +69,9 @@ impl NameNode for NameNodeService {
     ) -> ServiceResult<Response<WriteStartResponse>> {
         let req = request.into_inner();
 
-        let (desc, expire) = self
+        let expire = self
             .file_mgr
-            .init_write(
-                &req.operation_id,
-                &req.file_name,
-                req.file_size,
-                &self.data_nodes,
-            )
+            .init_write(&req.operation_id, &req.file_name)
             .await?;
 
         self.log_mgr.write(LogLevel::Info, || {
@@ -84,25 +79,49 @@ impl NameNode for NameNodeService {
         });
 
         let res = WriteStartResponse {
-            file_name: req.file_name.clone(),
+            file_name: req.file_name,
             expire,
             message_size: self.message_size as u64,
-            blocks: desc
-                .blocks
-                .iter()
-                .map(|b| Block {
-                    block_id: b.id.clone(),
-                    block_size: b.size,
-                    nodes: b
-                        .nodes
-                        .iter()
-                        .map(|h| Node {
-                            host: h.hostname.clone(),
-                            port: h.port as u32,
-                        })
-                        .collect(),
-                })
-                .collect(),
+            block_size: self.file_mgr.block_size() as u64,
+        };
+
+        Ok(Response::new(res))
+    }
+
+    /**
+     * Allocates a single new block for an in-progress write.
+     *
+     *  @param request - [AddBlockRequest] with file name and operation ID.
+     *  @return ServiceResult<Response<AddBlockResponse>> - The new block assignment.
+     */
+    async fn add_block(
+        &self,
+        request: Request<AddBlockRequest>,
+    ) -> ServiceResult<Response<AddBlockResponse>> {
+        let req = request.into_inner();
+
+        let desc = self
+            .file_mgr
+            .add_block(&req.file_name, &req.operation_id, &self.data_nodes)
+            .await?;
+
+        self.log_mgr.write(LogLevel::Info, || {
+            format!("Allocated block {} for file {}", desc.id, req.file_name)
+        });
+
+        let res = AddBlockResponse {
+            block: Some(Block {
+                block_id: desc.id,
+                block_size: desc.size,
+                nodes: desc
+                    .nodes
+                    .iter()
+                    .map(|h| Node {
+                        host: h.hostname.clone(),
+                        port: h.port as u32,
+                    })
+                    .collect(),
+            }),
         };
 
         Ok(Response::new(res))

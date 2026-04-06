@@ -34,6 +34,7 @@ message JournalEntry {
     oneof op {
         WriteStartEntry writeStart = 2;
         WriteCompleteEntry writeComplete = 3;
+        AddBlockEntry addBlock = 4;
     }
 }
 
@@ -41,10 +42,15 @@ message WriteStartEntry {
     string fileName = 1;
     string operationID = 2;
     uint64 expire = 3;
-    repeated BlockEntry blocks = 4;
 }
 
 message WriteCompleteEntry {
     string fileName = 1;
     string operationID = 2;
+}
+
+message AddBlockEntry {
+    string fileName = 1;
+    string operationID = 2;
+    BlockEntry block = 3;
 }

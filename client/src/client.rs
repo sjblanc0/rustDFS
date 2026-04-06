@@ -2,7 +2,7 @@ use core::str;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::fs::{self, File};
+use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::join;
 use tokio::sync::Mutex;
@@ -16,6 +16,7 @@ use rustdfs_proto::data::ReadRequest as DataReadRequest;
 use rustdfs_proto::data::WriteRequest;
 use rustdfs_proto::data::data_node_client::DataNodeClient;
 use rustdfs_proto::data::write_request::ReplicaNode;
+use rustdfs_proto::name::AddBlockRequest;
 use rustdfs_proto::name::ReadRequest as NameReadRequest;
 use rustdfs_proto::name::RenewLeaseRequest;
 use rustdfs_proto::name::WriteEndRequest;
@@ -89,22 +90,24 @@ impl RustDFSClient {
 
     /**
      * Uploads a local file to the cluster.
-     *  => Contacts the Name Node to allocate blocks and acquire a lease.
+     *  => Contacts the Name Node to acquire a write lease.
+     *  => Requests blocks incrementally via AddBlock as each fills up.
      *  => For each block, opens a streaming gRPC write to the primary
      *     Data Node while concurrently consuming acknowledgements.
-     *  => Uses an [Arc<Mutex<BufReader>>] to share a single file reader
-     *     across sequential block writes.
      *  => Finalizes the write with write_end to release the lease.
      */
     async fn write(&mut self) -> Result<()> {
         let op_id = Uuid::new_v4().to_string();
         let mut name = name_client(&self.host, &self.out).await?;
-        let start_req = write_start_req(&self.source, &self.dest, &op_id).await?;
+        let start_req = write_start_req(&self.dest, &op_id);
         let start_res = name
             .write_start(start_req)
             .await
             .map_err(RustDFSError::TonicStatus)?
             .into_inner();
+
+        let block_size = start_res.block_size;
+        let msg_size = start_res.message_size as usize;
 
         let lease_handle = spawn_lease_renewal(
             name.clone(),
@@ -115,9 +118,28 @@ impl RustDFSClient {
         );
 
         let mut err = None;
-        let reader = reader(&self.source, start_res.message_size as usize).await?;
+        let reader = reader(&self.source, msg_size).await?;
+        let mut eof = false;
 
-        'outer: for block in &start_res.blocks {
+        while !eof {
+            let add_req = AddBlockRequest {
+                file_name: self.dest.clone(),
+                operation_id: op_id.clone(),
+            };
+
+            let add_res = match name
+                .add_block(add_req)
+                .await
+                .map_err(RustDFSError::TonicStatus)
+            {
+                Ok(res) => res.into_inner(),
+                Err(e) => {
+                    err = Some(e);
+                    break;
+                }
+            };
+
+            let block = add_res.block.unwrap();
             let data_host = to_host_addr(&block.nodes[0]);
             let mut data = data_client(&data_host, &self.out).await?;
 
@@ -135,15 +157,14 @@ impl RustDFSClient {
                 .into_inner();
 
             match join!(
-                async move {
+                async {
                     let reader_ref = reader.clone();
                     let mut reader = reader_ref.lock().await;
-                    let msg_size = start_res.message_size as usize;
                     let mut buf = vec![0u8; msg_size];
                     let mut sent: u64 = 0;
 
                     loop {
-                        let remain = (block.block_size - sent) as usize;
+                        let remain = (block_size - sent) as usize;
                         let n = remain.min(buf.len());
 
                         if n == 0 {
@@ -152,6 +173,7 @@ impl RustDFSClient {
 
                         match reader.read(&mut buf[..n]).await {
                             Ok(0) => {
+                                eof = true;
                                 break;
                             }
                             Ok(n) => {
@@ -196,7 +218,7 @@ impl RustDFSClient {
             ) {
                 (Err(e), _) | (_, Err(e)) => {
                     err = Some(e);
-                    break 'outer;
+                    break;
                 }
                 _ => {}
             }
@@ -346,20 +368,17 @@ async fn data_client(host: &HostAddr, out: &OutManager) -> Result<DataNodeClient
 }
 
 /**
- * Builds a [WriteStartRequest] by reading the source file metadata.
+ * Builds a [WriteStartRequest] for the given file and operation.
  *
- *  @param source - Local file path.
  *  @param dest - Remote file name in the namespace.
  *  @param id - Operation ID for the write lease.
- *  @return Result<WriteStartRequest>
+ *  @return WriteStartRequest
  */
-async fn write_start_req(source: &str, dest: &str, id: &str) -> Result<WriteStartRequest> {
-    let req = WriteStartRequest {
+fn write_start_req(dest: &str, id: &str) -> WriteStartRequest {
+    WriteStartRequest {
         file_name: dest.to_string(),
         operation_id: id.to_string(),
-        file_size: fs::metadata(source).await.map_err(RustDFSError::Io)?.len(),
-    };
-    Ok(req)
+    }
 }
 
 /**

@@ -1,4 +1,3 @@
-use futures::future;
 use prost::Message;
 use rand::seq::SliceRandom;
 use rustdfs_shared::error::RustDFSError;
@@ -15,7 +14,7 @@ use uuid::Uuid;
 use crate::nodes::DataNodeManager;
 use rustdfs_proto::persist::journal_entry::Op;
 use rustdfs_proto::persist::{
-    BlockEntry, Checkpoint, FileEntry, FileStatus, JournalEntry, WriteCompleteEntry,
+    AddBlockEntry, BlockEntry, Checkpoint, FileEntry, FileStatus, JournalEntry, WriteCompleteEntry,
     WriteStartEntry,
 };
 use rustdfs_shared::host::HostAddr;
@@ -191,25 +190,16 @@ impl FileManager {
     }
 
     /**
-     * Initializes a file write by allocating blocks and acquiring a lease.
+     * Initializes a file write by acquiring a lease.
      * If an in-progress lease has expired it is replaced; if the file
      * already has two versions the oldest is evicted.
      *
      *  @param operation_id - Unique ID for this write operation.
      *  @param file_name - Target file path in the namespace.
-     *  @param file_size - Total file size in bytes to compute block count.
-     *  @param data_nodes - [DataNodeManager] used to select storage nodes.
-     *  @return ServiceResult<(FileDescriptor, u64)> - Block assignments and lease expiry.
+     *  @return ServiceResult<u64> - Lease expiry timestamp.
      */
-    pub async fn init_write(
-        &self,
-        operation_id: &str,
-        file_name: &str,
-        file_size: u64,
-        data_nodes: &DataNodeManager,
-    ) -> ServiceResult<(FileDescriptor, u64)> {
+    pub async fn init_write(&self, operation_id: &str, file_name: &str) -> ServiceResult<u64> {
         let time = self.get_time_sec()?;
-        let count = (file_size as f64 / self.block_size as f64).ceil() as u32;
         let mut files = self.files.write().await;
 
         let deque = files
@@ -238,15 +228,16 @@ impl FileManager {
             }
         }
 
+        let expire = time + self.lease_duration as u64;
         let desc = FileDescriptor {
             status: WriteStatus::InProgress {
                 id: operation_id.to_string(),
-                expire: time + self.lease_duration as u64,
+                expire,
             },
-            blocks: self.allocate_blocks(count, data_nodes).await?,
+            blocks: Vec::new(),
         };
 
-        deque.push_back(desc.clone());
+        deque.push_back(desc);
 
         // clean up evicted blocks and fix indices
         {
@@ -266,19 +257,6 @@ impl FileManager {
                     }
                 }
             }
-
-            let deque_index = deque.len() - 1;
-
-            for (bi, block) in desc.blocks.iter().enumerate() {
-                idx.insert(
-                    block.id.clone(),
-                    BlockLocationIndex {
-                        file_name: file_name.to_string(),
-                        deque_index,
-                        block_index: bi,
-                    },
-                );
-            }
         }
 
         let journal_entry = JournalEntry {
@@ -286,8 +264,7 @@ impl FileManager {
             op: Some(Op::WriteStart(WriteStartEntry {
                 file_name: file_name.to_string(),
                 operation_id: operation_id.to_string(),
-                expire: time + self.lease_duration as u64,
-                blocks: desc.blocks.iter().map(block_to_entry).collect(),
+                expire,
             })),
         };
 
@@ -295,7 +272,7 @@ impl FileManager {
             Ok(should_checkpoint) => {
                 drop(files);
                 self.maybe_checkpoint(should_checkpoint).await;
-                Ok((desc, time + self.lease_duration as u64))
+                Ok(expire)
             }
             Err(e) => {
                 // roll-back current operation if journal write fails
@@ -312,6 +289,94 @@ impl FileManager {
                 Err(e)
             }
         }
+    }
+
+    /**
+     * Allocates a single new block for an in-progress write.
+     * Validates the lease, appends the block, updates the index,
+     * and journals an [AddBlockEntry].
+     *
+     *  @param file_name - Target file path in the namespace.
+     *  @param operation_id - ID of the write operation holding the lease.
+     *  @param data_nodes - [DataNodeManager] for selecting storage nodes.
+     *  @return ServiceResult<BlockDescriptor> - The newly allocated block.
+     */
+    pub async fn add_block(
+        &self,
+        file_name: &str,
+        operation_id: &str,
+        data_nodes: &DataNodeManager,
+    ) -> ServiceResult<BlockDescriptor> {
+        let mut files = self.files.write().await;
+
+        let deque = files.get_mut(file_name).ok_or_else(|| {
+            let err = status_file_not_found(file_name);
+            self.log_mgr.write_status(&err);
+            err
+        })?;
+
+        let deque_index = deque.len() - 1;
+
+        let desc = deque.back_mut().ok_or_else(|| {
+            let err = status_file_not_found(file_name);
+            self.log_mgr.write_status(&err);
+            err
+        })?;
+
+        match &desc.status {
+            WriteStatus::InProgress { id, .. } if id == operation_id => {}
+            _ => {
+                let err = status_lease_expired(file_name);
+                self.log_mgr.write_status(&err);
+                return Err(err);
+            }
+        }
+
+        let block = self.allocate_block(data_nodes).await?;
+
+        desc.blocks.push(block.clone());
+
+        let block_index = desc.blocks.len() - 1;
+
+        self.block_nodes.write().await.insert(
+            block.id.clone(),
+            BlockLocationIndex {
+                file_name: file_name.to_string(),
+                deque_index,
+                block_index,
+            },
+        );
+
+        let journal_entry = JournalEntry {
+            txn_id: 0,
+            op: Some(Op::AddBlock(AddBlockEntry {
+                file_name: file_name.to_string(),
+                operation_id: operation_id.to_string(),
+                block: Some(block_to_entry(&block)),
+            })),
+        };
+
+        match self.persist_journal(journal_entry).await {
+            Ok(should_checkpoint) => {
+                drop(files);
+                self.maybe_checkpoint(should_checkpoint).await;
+                Ok(block)
+            }
+            Err(e) => {
+                // roll-back: remove the block we just pushed
+                if let Some(deque) = files.get_mut(file_name)
+                    && let Some(desc) = deque.back_mut()
+                {
+                    desc.blocks.pop();
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Returns the configured block size in bytes.
+    pub fn block_size(&self) -> usize {
+        self.block_size
     }
 
     /**
@@ -472,33 +537,18 @@ impl FileManager {
     }
 
     /**
-     * Allocates the specified number of blocks, each assigned
-     * to randomly selected data nodes (primary + replicas).
+     * Allocates a single block assigned to randomly selected data nodes
+     * (primary + replicas).
      *
-     *  @param count - Number of blocks to allocate.
      *  @param data_nodes - [DataNodeManager] for selecting storage nodes.
-     *  @return ServiceResult<Vec<BlockDescriptor>> - Allocated block descriptors.
+     *  @return ServiceResult<BlockDescriptor> - Allocated block descriptor.
      */
-    async fn allocate_blocks(
-        &self,
-        count: u32,
-        data_nodes: &DataNodeManager,
-    ) -> ServiceResult<Vec<BlockDescriptor>> {
-        let futs = future::join_all(
-            (0..count)
-                .map(|_| async {
-                    Ok::<BlockDescriptor, Status>(BlockDescriptor {
-                        id: Uuid::new_v4().to_string(),
-                        size: self.block_size as u64,
-                        nodes: self.select_nodes(data_nodes).await.unwrap(),
-                    })
-                })
-                .collect::<Vec<_>>(),
-        );
-
-        futs.await
-            .into_iter()
-            .collect::<ServiceResult<Vec<BlockDescriptor>>>()
+    async fn allocate_block(&self, data_nodes: &DataNodeManager) -> ServiceResult<BlockDescriptor> {
+        Ok(BlockDescriptor {
+            id: Uuid::new_v4().to_string(),
+            size: self.block_size as u64,
+            nodes: self.select_nodes(data_nodes).await?,
+        })
     }
 
     /// Builds the flat block-id → location index from the file map.
@@ -758,7 +808,7 @@ impl FileManager {
                             id: ws.operation_id,
                             expire: ws.expire,
                         },
-                        blocks: ws.blocks.iter().map(entry_to_block_desc).collect(),
+                        blocks: Vec::new(),
                     };
 
                     let deque = files.entry(ws.file_name).or_default();
@@ -796,6 +846,36 @@ impl FileManager {
                     },
                     None => {
                         let err = err_replay_nonexistent_file(&wc.file_name);
+                        log_mgr.write_err(&err);
+                        return Err(err);
+                    }
+                },
+                Some(Op::AddBlock(ab)) => match files.get_mut(&ab.file_name) {
+                    Some(deque) => match deque.back_mut() {
+                        Some(desc) => match &desc.status {
+                            WriteStatus::InProgress { id, .. } if id == &ab.operation_id => {
+                                let block =
+                                    entry_to_block_desc(ab.block.as_ref().ok_or_else(|| {
+                                        let err = err_invalid_journal(&ab.file_name);
+                                        log_mgr.write_err(&err);
+                                        err
+                                    })?);
+                                desc.blocks.push(block);
+                            }
+                            _ => {
+                                let err = err_invalid_journal(&ab.file_name);
+                                log_mgr.write_err(&err);
+                                return Err(err);
+                            }
+                        },
+                        None => {
+                            let err = err_replay_nonexistent_file(&ab.file_name);
+                            log_mgr.write_err(&err);
+                            return Err(err);
+                        }
+                    },
+                    None => {
+                        let err = err_replay_nonexistent_file(&ab.file_name);
                         log_mgr.write_err(&err);
                         return Err(err);
                     }
