@@ -6,7 +6,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{self};
@@ -112,14 +113,26 @@ impl DataNode for DataNodeService {
         let mut tasks = JoinSet::new();
 
         tasks.spawn(async move {
+            let mut writer: Option<BufWriter<File>> = None;
+
             while let Some(res) = req_stream.next().await {
                 match res {
                     Ok(req) => {
-                        let mut writer = block_mgr.write_buf(&req.block_id, msg_size).await?;
+                        let w = match writer.as_mut() {
+                            Some(w) => {
+                                w
+                            }
+                            None => {
+                                let w = block_mgr.write_buf(&req.block_id, msg_size).await?;
 
-                        writer.write(&req.data).await.map_err(status_err_writing)?;
+                                writer = Some(w);
+                                writer.as_mut().unwrap()
+                            }
+                        };
 
-                        writer.flush().await.map_err(status_err_writing)?;
+                        w.write(&req.data).await.map_err(status_err_writing)?;
+
+                        w.flush().await.map_err(status_err_writing)?;
 
                         match req.replicas.len() {
                             0 => {

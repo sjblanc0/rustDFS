@@ -9,7 +9,7 @@ use rustdfs_shared::logging::LogManager;
 use rustdfs_shared::result::{Result, ServiceResult};
 use tonic::Status;
 
-/// Bytes written at the start of block to identify format.
+// Bytes written at start of block to identify format
 const BLOCK_HDR: &[u8; 4] = b"RDFS";
 
 /**
