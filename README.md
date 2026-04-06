@@ -41,7 +41,13 @@ The name node durably persists the file namespace using an HDFS-inspired journal
 - **Checkpoint** — a full protobuf snapshot of the file namespace, written periodically or when the journal exceeds a configurable transaction threshold.
 - **Recovery** — on startup, loads the latest checkpoint and replays journal entries to reconstruct the in-memory state. In-progress writes that were never completed are rolled back.
 
-Data node locations are **not** persisted — they are recovered from data node registrations and heartbeats after restart.
+Data node locations are **not** persisted — they are recovered at startup when data nodes re-register and send **block reports** (see below).
+
+### Block Reports
+
+After registering with the name node, each data node scans its local data directory and sends a `BlockReport` RPC containing the IDs of all blocks it holds. The name node uses this to repopulate the block-to-node index. Any block IDs unknown to the name node are returned in the response, and the data node deletes those stale files.
+
+Block files are prefixed with a 4-byte magic header (`RDFS`) so that `scan_blocks()` can distinguish valid blocks from other files in the data directory.
 
 ### Heartbeats & Liveness
 
@@ -169,6 +175,7 @@ rustDFS-client read <namenode_host:port> <remote_source> <local_dest> [-v <error
 | `Read` | `ReadRequest` | `ReadResponse` | Get block locations for a file |
 | `Register` | `RegisterRequest` | `Empty` | Register a data node with the cluster |
 | `Heartbeat` | `HeartbeatRequest` | `HeartbeatResponse` | Data node liveness signal |
+| `BlockReport` | `BlockReportRequest` | `BlockReportResponse` | Data node reports held blocks; response lists stale blocks to delete |
 
 ### Data Node
 
@@ -196,6 +203,7 @@ The `example/` directory contains two ready-to-run demos:
 |---|---|
 | [`example/basic`](example/basic/) | Write + read verification (small, medium, and large files) |
 | [`example/leasing`](example/leasing/) | Write-lease conflict and read-during-overwrite tests |
+| [`example/persistence`](example/persistence/) | Full cluster restart — verifies data survives via checkpoint/journal + block reports |
 
 Each has its own `docker-compose.yml` that spins up 3 data nodes, 1 name node, and a client container:
 
@@ -230,8 +238,13 @@ rustDFS/
     │   ├── docker-compose.yml
     │   ├── rdfsconf.toml
     │   └── client.sh
-    └── leasing/     # Lease conflict & concurrent read tests
+    ├── leasing/     # Lease conflict & concurrent read tests
+    │   ├── docker-compose.yml
+    │   ├── rdfsconf.toml
+    │   └── client.sh
+    └── persistence/  # Full cluster restart & recovery demo
         ├── docker-compose.yml
         ├── rdfsconf.toml
-        └── client.sh
+        ├── client.sh
+        └── run.sh
 ```

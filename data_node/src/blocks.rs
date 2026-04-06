@@ -178,6 +178,7 @@ impl BlockManager {
      */
     pub fn delete_block(&self, block_id: &str) {
         let block_path = format!("{}/{}", self.path, block_id);
+
         if let Err(e) = fs::remove_file(&block_path) {
             self.log_mgr.write_err(&RustDFSError::IoError(e));
         }

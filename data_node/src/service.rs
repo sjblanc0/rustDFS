@@ -502,9 +502,8 @@ async fn name_node_lifecycle(
                     let to_delete = resp.into_inner().remove_block_ids;
 
                     for id in &to_delete {
-                        logger.write(LogLevel::Info, || {
-                            format!("Deleting stale block {}", id)
-                        });
+                        logger.write(LogLevel::Info, || format!("Deleting stale block {}", id));
+
                         block_mgr.delete_block(id);
                     }
                 }
