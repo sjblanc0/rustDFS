@@ -6,6 +6,7 @@ import "google/protobuf/empty.proto";
 
 service NameNode {
     rpc WriteStart (WriteStartRequest) returns (WriteStartResponse);
+    rpc AddBlock (AddBlockRequest) returns (AddBlockResponse);
     rpc WriteEnd (WriteEndRequest) returns (google.protobuf.Empty);
     rpc RenewLease (RenewLeaseRequest) returns (RenewLeaseResponse);
     rpc Read (ReadRequest) returns (ReadResponse);
@@ -17,14 +18,22 @@ service NameNode {
 message WriteStartRequest {
     string fileName = 1;
     string operationID = 2;
-    uint64 fileSize = 3;
 }
 
 message WriteStartResponse {
     string fileName = 1;
     uint64 expire = 2;
     uint64 messageSize = 3;
-    repeated Block blocks = 4;
+    uint64 blockSize = 4;
+}
+
+message AddBlockRequest {
+    string fileName = 1;
+    string operationID = 2;
+}
+
+message AddBlockResponse {
+    Block block = 1;
 }
 
 message WriteEndRequest {
