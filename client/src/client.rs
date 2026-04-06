@@ -157,11 +157,12 @@ impl RustDFSClient {
                 .into_inner();
 
             match join!(
-                async {
+                async move {
                     let reader_ref = reader.clone();
                     let mut reader = reader_ref.lock().await;
                     let mut buf = vec![0u8; msg_size];
                     let mut sent: u64 = 0;
+                    let mut hit_eof = false;
 
                     loop {
                         let remain = (block_size - sent) as usize;
@@ -173,7 +174,7 @@ impl RustDFSClient {
 
                         match reader.read(&mut buf[..n]).await {
                             Ok(0) => {
-                                eof = true;
+                                hit_eof = true;
                                 break;
                             }
                             Ok(n) => {
@@ -199,7 +200,7 @@ impl RustDFSClient {
                         }
                     }
 
-                    Ok::<(), RustDFSError>(())
+                    Ok::<bool, RustDFSError>(hit_eof)
                 },
                 async move {
                     while let Some(res) = out_stream.next().await {
@@ -216,11 +217,13 @@ impl RustDFSClient {
                     Ok::<(), RustDFSError>(())
                 }
             ) {
+                (Ok(hit_eof), Ok(())) => {
+                    eof = hit_eof;
+                }
                 (Err(e), _) | (_, Err(e)) => {
                     err = Some(e);
                     break;
                 }
-                _ => {}
             }
         }
 

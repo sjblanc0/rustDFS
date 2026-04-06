@@ -229,6 +229,7 @@ impl FileManager {
         }
 
         let expire = time + self.lease_duration as u64;
+
         let desc = FileDescriptor {
             status: WriteStatus::InProgress {
                 id: operation_id.to_string(),
@@ -363,7 +364,7 @@ impl FileManager {
                 Ok(block)
             }
             Err(e) => {
-                // roll-back: remove the block we just pushed
+                // roll-back / remove the block we just pushed
                 if let Some(deque) = files.get_mut(file_name)
                     && let Some(desc) = deque.back_mut()
                 {
@@ -374,7 +375,7 @@ impl FileManager {
         }
     }
 
-    /// Returns the configured block size in bytes.
+    // Returns configured block size in bytes
     pub fn block_size(&self) -> usize {
         self.block_size
     }
