@@ -10,9 +10,9 @@ use crate::nodes::DataNodeManager;
 use rustdfs_proto::name::name_node_server::NameNode;
 use rustdfs_proto::name::name_node_server::NameNodeServer;
 use rustdfs_proto::name::{
-    Block, BlockReportRequest, HeartbeatRequest, HeartbeatResponse, ReadRequest, ReadResponse,
-    RegisterRequest, RenewLeaseRequest, RenewLeaseResponse, WriteEndRequest, WriteStartRequest,
-    WriteStartResponse, block::Node,
+    Block, BlockReportRequest, BlockReportResponse, HeartbeatRequest, HeartbeatResponse,
+    ReadRequest, ReadResponse, RegisterRequest, RenewLeaseRequest, RenewLeaseResponse,
+    WriteEndRequest, WriteStartRequest, WriteStartResponse, block::Node,
 };
 use rustdfs_shared::config::RustDFSConfig;
 use rustdfs_shared::error::RustDFSError;
@@ -245,7 +245,7 @@ impl NameNode for NameNodeService {
     async fn block_report(
         &self,
         request: Request<BlockReportRequest>,
-    ) -> ServiceResult<Response<()>> {
+    ) -> ServiceResult<Response<BlockReportResponse>> {
         let req = request.into_inner();
         let host = HostAddr {
             hostname: req.host.clone(),
@@ -261,8 +261,17 @@ impl NameNode for NameNodeService {
             )
         });
 
-        self.file_mgr.report_blocks(&host, &req.block_i_ds).await;
-        Ok(Response::new(()))
+        let stale = self.file_mgr.report_blocks(&host, &req.block_i_ds).await;
+
+        if !stale.is_empty() {
+            self.log_mgr.write(LogLevel::Info, || {
+                format!("Requesting deletion of {} stale blocks", stale.len())
+            });
+        }
+
+        Ok(Response::new(BlockReportResponse {
+            remove_block_ids: stale,
+        }))
     }
 }
 

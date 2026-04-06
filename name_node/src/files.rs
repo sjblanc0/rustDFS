@@ -251,10 +251,12 @@ impl FileManager {
         // clean up evicted blocks and fix indices
         {
             let mut idx = self.block_nodes.write().await;
+
             if let Some(ref evicted_desc) = evicted {
                 for block in &evicted_desc.blocks {
                     idx.remove(&block.id);
                 }
+
                 if evicted_front && let Some(front) = deque.front() {
                     for (bi, block) in front.blocks.iter().enumerate() {
                         if let Some(loc) = idx.get_mut(&block.id) {
@@ -264,7 +266,9 @@ impl FileManager {
                     }
                 }
             }
+
             let deque_index = deque.len() - 1;
+
             for (bi, block) in desc.blocks.iter().enumerate() {
                 idx.insert(
                     block.id.clone(),
@@ -442,10 +446,12 @@ impl FileManager {
      *
      *  @param host - [HostAddr] of the reporting data node.
      *  @param block_ids - Block IDs that the data node currently holds.
+     *  @return Vec<String> - Block IDs unknown to the name node that should be deleted.
      */
-    pub async fn report_blocks(&self, host: &HostAddr, block_ids: &[String]) -> ServiceResult<()> {
+    pub async fn report_blocks(&self, host: &HostAddr, block_ids: &[String]) -> Vec<String> {
         let mut files = self.files.write().await;
         let idx = self.block_nodes.read().await;
+        let mut stale = Vec::new();
 
         for id in block_ids {
             if let Some(loc) = idx.get(id)
@@ -458,13 +464,11 @@ impl FileManager {
                     block.nodes.push(host.clone());
                 }
             } else {
-                let err = status_unknown_block_reported(id);
-                self.log_mgr.write_status(&err);
-                return Err(err);
+                stale.push(id.clone());
             }
         }
 
-        Ok(())
+        stale
     }
 
     /**
@@ -874,11 +878,6 @@ fn err_replay_nonexistent_file(file_name: &str) -> RustDFSError {
         file_name
     );
     RustDFSError::CustomError(msg)
-}
-
-fn status_unknown_block_reported(id: &str) -> Status {
-    let msg = format!("Block report contains ID: {}", id);
-    Status::not_found(msg)
 }
 
 fn status_writing_journal(e: std::io::Error) -> Status {

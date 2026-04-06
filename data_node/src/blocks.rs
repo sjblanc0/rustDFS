@@ -170,6 +170,18 @@ impl BlockManager {
 
         results
     }
+
+    /**
+     * Deletes a block file from the data directory.
+     *
+     *  @param block_id - Block ID (file name) to remove.
+     */
+    pub fn delete_block(&self, block_id: &str) {
+        let block_path = format!("{}/{}", self.path, block_id);
+        if let Err(e) = fs::remove_file(&block_path) {
+            self.log_mgr.write_err(&RustDFSError::IoError(e));
+        }
+    }
 }
 
 // Helper functions for error statuses

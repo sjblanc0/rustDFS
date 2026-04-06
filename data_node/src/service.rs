@@ -490,7 +490,7 @@ async fn name_node_lifecycle(
                 format!("Sending block report with {} blocks", block_ids.len())
             });
 
-            if let Err(e) = client
+            match client
                 .block_report(BlockReportRequest {
                     host: host.hostname.clone(),
                     port: host.port as u32,
@@ -498,12 +498,24 @@ async fn name_node_lifecycle(
                 })
                 .await
             {
-                logger.write_status(&e);
-                logger.write(LogLevel::Error, || {
-                    "Blockreport failed. Re-registering...".to_string()
-                });
+                Ok(resp) => {
+                    let to_delete = resp.into_inner().remove_block_ids;
 
-                continue;
+                    for id in &to_delete {
+                        logger.write(LogLevel::Info, || {
+                            format!("Deleting stale block {}", id)
+                        });
+                        block_mgr.delete_block(id);
+                    }
+                }
+                Err(e) => {
+                    logger.write_status(&e);
+                    logger.write(LogLevel::Error, || {
+                        "Blockreport failed. Re-registering...".to_string()
+                    });
+
+                    continue;
+                }
             }
         }
 
