@@ -11,6 +11,7 @@ service NameNode {
     rpc Read (ReadRequest) returns (ReadResponse);
     rpc Register (RegisterRequest) returns (google.protobuf.Empty);
     rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+    rpc BlockReport (BlockReportRequest) returns (google.protobuf.Empty);
 }
 
 message WriteStartRequest {
@@ -74,4 +75,10 @@ message Block {
         string host = 1;
         uint32 port = 2;
     }
+}
+
+message BlockReportRequest {
+    string host = 1;
+    uint32 port = 2;
+    repeated string blockIDs = 3;
 }

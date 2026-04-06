@@ -3,6 +3,7 @@ use prost::Message;
 use rand::seq::SliceRandom;
 use rustdfs_shared::error::RustDFSError;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
@@ -385,6 +386,30 @@ impl FileManager {
         let err = status_file_not_found(file_name);
         self.log_mgr.write_status(&err);
         Err(err)
+    }
+
+    /**
+     * Processes a block report from a data node.
+     * For every block ID reported, adds the data node's address to
+     * the matching [BlockDescriptor]'s node list (if not already present).
+     *
+     *  @param host - [HostAddr] of the reporting data node.
+     *  @param block_ids - Block IDs that the data node currently holds.
+     */
+    pub async fn report_blocks(&self, host: &HostAddr, block_ids: &[String]) {
+        let id_set: HashSet<&str> = block_ids.iter().map(|s| s.as_str()).collect();
+        let mut files = self.files.write().await;
+
+        for deque in files.values_mut() {
+            for desc in deque.iter_mut() {
+                for block in &mut desc.blocks {
+                    if id_set.contains(block.id.as_str()) && !block.nodes.iter().any(|n| n == host)
+                    {
+                        block.nodes.push(host.clone());
+                    }
+                }
+            }
+        }
     }
 
     /**
