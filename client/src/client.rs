@@ -1,18 +1,16 @@
 use core::str;
 use futures::StreamExt;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::join;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
+use tonic::Streaming;
 use uuid::Uuid;
 
 use rustdfs_proto::data::ReadRequest as DataReadRequest;
+use rustdfs_proto::data::ReadResponse as DataReadResponse;
 use rustdfs_proto::data::WriteRequest;
 use rustdfs_proto::data::data_node_client::DataNodeClient;
 use rustdfs_proto::data::write_request::ReplicaNode;
@@ -23,8 +21,8 @@ use rustdfs_proto::name::WriteEndRequest;
 use rustdfs_proto::name::WriteStartRequest;
 use rustdfs_proto::name::block::Node;
 use rustdfs_proto::name::name_node_client::NameNodeClient;
+use rustdfs_proto::name::Block;
 
-use crate::args::{Operation, RustDFSArgs};
 use crate::error::RustDFSError;
 use crate::host::HostAddr;
 use crate::out::OutManager;
@@ -34,73 +32,126 @@ use crate::result::Result;
 const CHANNEL_SIZE: usize = 8;
 
 /**
- * RustDFS client. Performs file read and write operations
- * against the cluster by coordinating with the Name Node
- * (metadata) and Data Nodes (block I/O) over gRPC.
+ * Filesystem handle — connection to the name node.
  *
  *  @field host - [HostAddr] of the Name Node.
- *  @field source - Source path (local for write, remote for read).
- *  @field dest - Destination path (remote for write, local for read).
- *  @field out - [OutManager] for console output.
+ *  @field name - gRPC client to the Name Node.
+ *  @field out - [OutManager] for optional console output.
  */
-#[derive(Debug, Clone)]
-pub struct RustDFSClient {
-    host: HostAddr,
-    source: String,
-    dest: String,
+pub struct RdfsClient {
+    name: NameNodeClient<Channel>,
     out: OutManager,
 }
 
-impl RustDFSClient {
+impl RdfsClient {
     /**
-     * Creates a new [RustDFSClient] from parsed CLI args.
+     * Connect to the name node.
      *
-     *  @param args - [RustDFSArgs] containing host, source, dest, verbosity.
-     *  @return Result<RustDFSClient> - Initialized client or error.
+     *  @param host - Host string in "host:port" format.
+     *  @param port - Port number.
+     *  @return Result<Self>
      */
-    pub async fn new(args: RustDFSArgs) -> Result<Self> {
-        Ok(RustDFSClient {
-            host: HostAddr::from_str(&args.host)?,
-            source: args.source,
-            dest: args.dest,
-            out: OutManager {
-                verbosity: args.verbosity,
-            },
+    pub async fn connect(host: &str, port: u16) -> Result<Self> {
+        let host_addr = HostAddr {
+            hostname: host.to_string(),
+            port,
+        };
+        let out = OutManager {
+            verbosity: Verbosity::Silent,
+        };
+        let name = name_client(&host_addr, &out).await?;
+        Ok(RdfsClient {
+            name,
+            out,
         })
     }
 
     /**
-     * Dispatches the requested operation.
+     * Connect to the name node from a "host:port" string.
      *
-     *  @param op - [Operation] to perform (Read or Write).
-     *  @return Result<()>
+     *  @param host_str - Host string in "host:port" format.
+     *  @return Result<Self>
      */
-    pub async fn run(&mut self, op: Operation) -> Result<()> {
-        match op {
-            Operation::Write => match self.write().await {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            },
-            Operation::Read => match self.read().await {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            },
-        }
+    pub async fn connect_from_str(host_str: &str) -> Result<Self> {
+        let host_addr = HostAddr::from_str(host_str)?;
+        let out = OutManager {
+            verbosity: Verbosity::Silent,
+        };
+        let name = name_client(&host_addr, &out).await?;
+        Ok(RdfsClient {
+            name,
+            out,
+        })
     }
 
     /**
-     * Uploads a local file to the cluster.
-     *  => Contacts the Name Node to acquire a write lease.
-     *  => Requests blocks incrementally via AddBlock as each fills up.
-     *  => For each block, opens a streaming gRPC write to the primary
-     *     Data Node while concurrently consuming acknowledgements.
-     *  => Finalizes the write with write_end to release the lease.
+     * Set the verbosity level for logging output.
+     *
+     *  @param verbosity - [Verbosity] level.
      */
-    async fn write(&mut self) -> Result<()> {
+    pub fn set_verbosity(&mut self, verbosity: Verbosity) {
+        self.out.verbosity = verbosity;
+    }
+
+    /**
+     * Disconnect and release resources.
+     */
+    pub async fn disconnect(self) {
+        drop(self);
+    }
+
+    /**
+     * Open a file for reading or writing.
+     *
+     *  @param path - Remote file path.
+     *  @param flags - [O_RDONLY] or [O_WRONLY].
+     *  @return Result<RdfsFile>
+     */
+    pub async fn open(&mut self, path: &str, flags: i32) -> Result<RdfsFile> {
+        if flags == crate::O_RDONLY {
+            self.open_read(path).await
+        } else if flags == crate::O_WRONLY {
+            self.open_write(path).await
+        } else {
+            Err(RustDFSError::Custom(format!("Invalid flags: {}", flags)))
+        }
+    }
+
+    async fn open_read(&mut self, path: &str) -> Result<RdfsFile> {
+        let name_req = NameReadRequest {
+            file_name: path.to_string(),
+        };
+        let name_res = self
+            .name
+            .read(name_req)
+            .await
+            .map_err(RustDFSError::TonicStatus)?
+            .into_inner();
+
+        let blocks = name_res.blocks;
+
+        Ok(RdfsFile {
+            state: FileState::Read(ReadState {
+                blocks,
+                current_block_idx: 0,
+                stream: None,
+                offset: 0,
+                overflow: Vec::new(),
+                overflow_pos: 0,
+                out: self.out.clone(),
+                eof: false,
+            }),
+        })
+    }
+
+    async fn open_write(&mut self, path: &str) -> Result<RdfsFile> {
         let op_id = Uuid::new_v4().to_string();
-        let mut name = name_client(&self.host, &self.out).await?;
-        let start_req = write_start_req(&self.dest, &op_id);
-        let start_res = name
+        let start_req = WriteStartRequest {
+            file_name: path.to_string(),
+            operation_id: op_id.clone(),
+        };
+        let start_res = self
+            .name
             .write_start(start_req)
             .await
             .map_err(RustDFSError::TonicStatus)?
@@ -110,231 +161,447 @@ impl RustDFSClient {
         let msg_size = start_res.message_size as usize;
 
         let lease_handle = spawn_lease_renewal(
-            name.clone(),
-            self.dest.clone(),
+            self.name.clone(),
+            path.to_string(),
             op_id.clone(),
             start_res.expire,
             self.out.clone(),
         );
 
-        let mut err = None;
-        let reader = reader(&self.source, msg_size).await?;
-        let mut eof = false;
-
-        while !eof {
-            let add_req = AddBlockRequest {
-                file_name: self.dest.clone(),
-                operation_id: op_id.clone(),
-            };
-
-            let add_res = match name
-                .add_block(add_req)
-                .await
-                .map_err(RustDFSError::TonicStatus)
-            {
-                Ok(res) => res.into_inner(),
-                Err(e) => {
-                    err = Some(e);
-                    break;
-                }
-            };
-
-            let block = add_res.block.unwrap();
-            let data_host = to_host_addr(&block.nodes[0]);
-            let mut data = data_client(&data_host, &self.out).await?;
-
-            let (tx, rx) = mpsc::channel::<WriteRequest>(CHANNEL_SIZE);
-            let in_stream = ReceiverStream::new(rx);
-
-            let reader = reader.clone();
-            let out_a = self.out.clone();
-            let out_b = self.out.clone();
-
-            let mut out_stream = data
-                .write(in_stream)
-                .await
-                .map_err(RustDFSError::TonicStatus)?
-                .into_inner();
-
-            match join!(
-                async move {
-                    let reader_ref = reader.clone();
-                    let mut reader = reader_ref.lock().await;
-                    let mut buf = vec![0u8; msg_size];
-                    let mut sent: u64 = 0;
-                    let mut hit_eof = false;
-
-                    loop {
-                        let remain = (block_size - sent) as usize;
-                        let n = remain.min(buf.len());
-
-                        if n == 0 {
-                            break;
-                        }
-
-                        match reader.read(&mut buf[..n]).await {
-                            Ok(0) => {
-                                hit_eof = true;
-                                break;
-                            }
-                            Ok(n) => {
-                                sent += n as u64;
-
-                                let req = WriteRequest {
-                                    block_id: block.block_id.clone(),
-                                    data: buf[..n].to_vec(),
-                                    replicas: to_replica_nodes(&block.nodes[1..]),
-                                };
-
-                                tx.send(req).await.map_err(|e| {
-                                    let err = RustDFSError::DataWrite(e);
-                                    out_a.write_err(&err);
-                                    err
-                                })?;
-                            }
-                            Err(e) => {
-                                let err = RustDFSError::Io(e);
-                                out_a.write_err(&err);
-                                return Err(err);
-                            }
-                        }
-                    }
-
-                    Ok::<bool, RustDFSError>(hit_eof)
-                },
-                async move {
-                    while let Some(res) = out_stream.next().await {
-                        match res {
-                            Ok(_) => {}
-                            Err(e) => {
-                                let err = RustDFSError::TonicStatus(e);
-                                out_b.write_err(&err);
-                                return Err(err);
-                            }
-                        }
-                    }
-
-                    Ok::<(), RustDFSError>(())
-                }
-            ) {
-                (Ok(hit_eof), Ok(())) => {
-                    eof = hit_eof;
-                }
-                (Err(e), _) | (_, Err(e)) => {
-                    err = Some(e);
-                    break;
-                }
-            }
-        }
-
-        lease_handle.abort();
-
-        let end_req = write_end_req(&self.dest, &op_id, err.is_none());
-        name.write_end(end_req).await.map_err(|e| {
-            let err = RustDFSError::TonicStatus(e);
-            self.out.write_err(&err);
-            err
-        })?;
-
-        match err {
-            Some(e) => Err(e),
-            None => {
-                self.out.write(Verbosity::Info, || {
-                    format!("Finished writing file: {}", self.dest)
-                });
-                Ok(())
-            }
-        }
-    }
-
-    /**
-     * Downloads a file from the cluster to a local path.
-     *  => Contacts the Name Node for block metadata.
-     *  => For each block, streams data from a Data Node, retrying
-     *     on the next replica on error (with byte-offset tracking
-     *     so partial reads are resumed).
-     *  => Writes received chunks to a [BufWriter].
-     */
-    async fn read(&mut self) -> Result<()> {
-        let mut name = name_client(&self.host, &self.out).await?;
-        let name_req = name_read_req(&self.source);
-        let name_res = name
-            .read(name_req)
-            .await
-            .map_err(RustDFSError::TonicStatus)?
-            .into_inner();
-
-        let mut writer = writer(&self.dest, name_res.message_size as usize).await?;
-
-        for block in name_res.blocks {
-            let node_count = block.nodes.len();
-            let mut offset = 0u64;
-
-            'retry: for (i, node) in block.nodes.iter().enumerate() {
-                let host = to_host_addr(node);
-                let req = data_read_req(&block.block_id, offset);
-                let mut data = data_client(&host, &self.out).await?;
-
-                let mut stream = data
-                    .read(req)
-                    .await
-                    .map_err(|e| {
-                        let err = RustDFSError::TonicStatus(e);
-                        self.out.write_err(&err);
-                        err
-                    })?
-                    .into_inner();
-
-                while let Some(res) = stream.next().await {
-                    match res {
-                        Ok(msg) => {
-                            offset += msg.data.len() as u64;
-
-                            writer.write(&msg.data).await.map_err(|e| {
-                                let err = RustDFSError::Io(e);
-                                self.out.write_err(&err);
-                                err
-                            })?;
-
-                            writer.flush().await.map_err(|e| {
-                                let err = RustDFSError::Io(e);
-                                self.out.write_err(&err);
-                                err
-                            })?;
-                        }
-                        Err(e) => {
-                            if i == node_count - 1 {
-                                let str = format!("Read failed for block {}", block.block_id);
-                                let err = RustDFSError::Custom(str.clone());
-                                self.out.write_err(&err);
-                                return Err(err);
-                            } else {
-                                let err = RustDFSError::TonicStatus(e);
-                                self.out.write_err(&err);
-                                continue 'retry;
-                            }
-                        }
-                    }
-                }
-
-                break;
-            }
-        }
-
-        self.out.write(Verbosity::Info, || {
-            format!("Finished reading file: {}", self.dest)
-        });
-        Ok(())
+        Ok(RdfsFile {
+            state: FileState::Write(WriteState {
+                name: self.name.clone(),
+                file_name: path.to_string(),
+                op_id,
+                block_size,
+                msg_size,
+                current_block: None,
+                lease_handle,
+                out: self.out.clone(),
+                closed: false,
+            }),
+        })
     }
 }
 
 /**
- * Connects to the Name Node and returns a gRPC client.
- *
- *  @param host - [HostAddr] of the Name Node.
- *  @param out - [OutManager] for logging.
- *  @return Result<NameNodeClient<Channel>>
+ * File handle — an open file for reading or writing.
+ * Internally tracks either [ReadState] or [WriteState].
  */
+pub struct RdfsFile {
+    state: FileState,
+}
+
+enum FileState {
+    Read(ReadState),
+    Write(WriteState),
+}
+
+struct ReadState {
+    blocks: Vec<Block>,
+    current_block_idx: usize,
+    stream: Option<Streaming<DataReadResponse>>,
+    offset: u64,
+    overflow: Vec<u8>,
+    overflow_pos: usize,
+    out: OutManager,
+    eof: bool,
+}
+
+struct CurrentBlock {
+    tx: mpsc::Sender<WriteRequest>,
+    block_id: String,
+    nodes: Vec<Node>,
+    ack_handle: JoinHandle<std::result::Result<(), RustDFSError>>,
+    sent: u64,
+}
+
+struct WriteState {
+    name: NameNodeClient<Channel>,
+    file_name: String,
+    op_id: String,
+    block_size: u64,
+    msg_size: usize,
+    current_block: Option<CurrentBlock>,
+    lease_handle: JoinHandle<()>,
+    out: OutManager,
+    closed: bool,
+}
+
+impl RdfsFile {
+    /**
+     * Read up to buf.len() bytes. Returns bytes read, 0 on EOF.
+     * Only valid for files opened with [O_RDONLY].
+     *
+     *  @param buf - Buffer to read into.
+     *  @return Result<usize> - Bytes read.
+     */
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let state = match &mut self.state {
+            FileState::Read(s) => s,
+            FileState::Write(_) => {
+                return Err(RustDFSError::Custom(
+                    "Cannot read from a write handle".to_string(),
+                ));
+            }
+        };
+
+        if state.eof || buf.is_empty() {
+            return Ok(0);
+        }
+
+        let mut written = 0usize;
+
+        // Drain overflow buffer first
+        if state.overflow_pos < state.overflow.len() {
+            let avail = state.overflow.len() - state.overflow_pos;
+            let n = avail.min(buf.len());
+            buf[..n].copy_from_slice(&state.overflow[state.overflow_pos..state.overflow_pos + n]);
+            state.overflow_pos += n;
+            written += n;
+
+            if state.overflow_pos >= state.overflow.len() {
+                state.overflow.clear();
+                state.overflow_pos = 0;
+            }
+
+            if written >= buf.len() {
+                return Ok(written);
+            }
+        }
+
+        // Read from blocks
+        loop {
+            if written >= buf.len() {
+                break;
+            }
+
+            // Open stream for current block if needed
+            if state.stream.is_none() {
+                if state.current_block_idx >= state.blocks.len() {
+                    state.eof = true;
+                    break;
+                }
+
+                let block = &state.blocks[state.current_block_idx];
+                let node_count = block.nodes.len();
+
+                let mut opened = false;
+                for (i, node) in block.nodes.iter().enumerate() {
+                    let host = to_host_addr(node);
+                    let req = DataReadRequest {
+                        block_id: block.block_id.clone(),
+                        offset: state.offset,
+                    };
+                    match data_client(&host, &state.out).await {
+                        Ok(mut client) => match client.read(req).await {
+                            Ok(response) => {
+                                state.stream = Some(response.into_inner());
+                                opened = true;
+                                break;
+                            }
+                            Err(e) => {
+                                let err = RustDFSError::TonicStatus(e);
+                                state.out.write_err(&err);
+                                if i == node_count - 1 {
+                                    return Err(err);
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            state.out.write_err(&e);
+                            if i == node_count - 1 {
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+
+                if !opened {
+                    let msg = format!(
+                        "Read failed for block {}",
+                        state.blocks[state.current_block_idx].block_id
+                    );
+                    return Err(RustDFSError::Custom(msg));
+                }
+            }
+
+            // Read from active stream
+            if let Some(stream) = &mut state.stream {
+                match stream.next().await {
+                    Some(Ok(msg)) => {
+                        state.offset += msg.data.len() as u64;
+                        let remaining = buf.len() - written;
+                        if msg.data.len() <= remaining {
+                            buf[written..written + msg.data.len()].copy_from_slice(&msg.data);
+                            written += msg.data.len();
+                        } else {
+                            buf[written..written + remaining]
+                                .copy_from_slice(&msg.data[..remaining]);
+                            written += remaining;
+                            state.overflow = msg.data[remaining..].to_vec();
+                            state.overflow_pos = 0;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        // Stream error — try next replica
+                        state.stream = None;
+                        let block = &state.blocks[state.current_block_idx];
+                        let node_count = block.nodes.len();
+
+                        // Find next replica to try
+                        let err = RustDFSError::TonicStatus(e);
+                        state.out.write_err(&err);
+
+                        // We can't easily track which replica we were on,
+                        // so re-open from offset (failover handled by opening again)
+                        if node_count <= 1 {
+                            return Err(err);
+                        }
+                        // Will retry on next loop iteration
+                    }
+                    None => {
+                        // Block stream ended — move to next block
+                        state.stream = None;
+                        state.current_block_idx += 1;
+                        state.offset = 0;
+                    }
+                }
+            }
+        }
+
+        Ok(written)
+    }
+
+    /**
+     * Write data. Returns bytes written.
+     * Only valid for files opened with [O_WRONLY].
+     * The library handles block boundaries, replication, and lease renewal.
+     *
+     *  @param data - Data to write.
+     *  @return Result<usize> - Bytes written.
+     */
+    pub async fn write(&mut self, data: &[u8]) -> Result<usize> {
+        let state = match &mut self.state {
+            FileState::Write(s) => s,
+            FileState::Read(_) => {
+                return Err(RustDFSError::Custom(
+                    "Cannot write to a read handle".to_string(),
+                ));
+            }
+        };
+
+        if data.is_empty() {
+            return Ok(0);
+        }
+
+        let mut total_written = 0usize;
+
+        while total_written < data.len() {
+            // Allocate a new block if needed
+            if state.current_block.is_none() {
+                allocate_block(state).await?;
+            }
+
+            let cb = state.current_block.as_ref().unwrap();
+            let remaining_in_block = (state.block_size - cb.sent) as usize;
+
+            if remaining_in_block == 0 {
+                // Current block is full — finalize it and allocate a new one
+                finalize_current_block(state).await?;
+                allocate_block(state).await?;
+                continue;
+            }
+
+            let remaining_data = &data[total_written..];
+            let chunk_len = remaining_data.len().min(remaining_in_block);
+
+            // Split into msg_size chunks
+            let mut pos = 0;
+            while pos < chunk_len {
+                let end = (pos + state.msg_size).min(chunk_len);
+                let chunk = &remaining_data[pos..end];
+
+                let cb = state.current_block.as_ref().unwrap();
+                let req = WriteRequest {
+                    block_id: cb.block_id.clone(),
+                    data: chunk.to_vec(),
+                    replicas: to_replica_nodes(&cb.nodes[1..]),
+                };
+
+                cb.tx.send(req).await.map_err(|e| {
+                    let err = RustDFSError::DataWrite(e);
+                    state.out.write_err(&err);
+                    err
+                })?;
+
+                pos += chunk.len();
+            }
+
+            // Update sent count
+            let cb = state.current_block.as_mut().unwrap();
+            cb.sent += chunk_len as u64;
+            total_written += chunk_len;
+        }
+
+        Ok(total_written)
+    }
+
+    /**
+     * Flush buffered write data to the current data node.
+     * Only valid for files opened with [O_WRONLY].
+     *
+     *  @return Result<()>
+     */
+    pub async fn flush(&mut self) -> Result<()> {
+        match &mut self.state {
+            FileState::Write(_) => {
+                // Data is sent immediately through the channel,
+                // so flush is a no-op at this level.
+                Ok(())
+            }
+            FileState::Read(_) => Err(RustDFSError::Custom(
+                "Cannot flush a read handle".to_string(),
+            )),
+        }
+    }
+
+    /**
+     * Close the file. For writes: sends WriteEnd, releases lease.
+     *
+     *  @return Result<()>
+     */
+    pub async fn close(mut self) -> Result<()> {
+        match &mut self.state {
+            FileState::Read(state) => {
+                state.stream = None;
+                state.eof = true;
+                Ok(())
+            }
+            FileState::Write(state) => {
+                if state.closed {
+                    return Ok(());
+                }
+                state.closed = true;
+
+                let mut err = None;
+
+                // Finalize current block if one is open
+                if state.current_block.is_some() {
+                    if let Err(e) = finalize_current_block(state).await {
+                        err = Some(e);
+                    }
+                }
+
+                // Abort lease renewal
+                state.lease_handle.abort();
+
+                // Send WriteEnd
+                let end_req = WriteEndRequest {
+                    file_name: state.file_name.clone(),
+                    operation_id: state.op_id.clone(),
+                    success: err.is_none(),
+                };
+                state.name.write_end(end_req).await.map_err(|e| {
+                    let err = RustDFSError::TonicStatus(e);
+                    state.out.write_err(&err);
+                    err
+                })?;
+
+                match err {
+                    Some(e) => Err(e),
+                    None => {
+                        state.out.write(Verbosity::Info, || {
+                            format!("Finished writing file: {}", state.file_name)
+                        });
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Allocates a new block for the write state by calling AddBlock
+ * on the name node.
+ */
+async fn allocate_block(state: &mut WriteState) -> Result<()> {
+    let add_req = AddBlockRequest {
+        file_name: state.file_name.clone(),
+        operation_id: state.op_id.clone(),
+    };
+
+    let add_res = state
+        .name
+        .add_block(add_req)
+        .await
+        .map_err(RustDFSError::TonicStatus)?
+        .into_inner();
+
+    let block = add_res.block.unwrap();
+    let data_host = to_host_addr(&block.nodes[0]);
+    let mut data = data_client(&data_host, &state.out).await?;
+
+    let (tx, rx) = mpsc::channel::<WriteRequest>(CHANNEL_SIZE);
+    let in_stream = ReceiverStream::new(rx);
+
+    let out = state.out.clone();
+
+    let mut out_stream = data
+        .write(in_stream)
+        .await
+        .map_err(RustDFSError::TonicStatus)?
+        .into_inner();
+
+    // Spawn a background task to drain acknowledgements
+    let ack_handle = tokio::spawn(async move {
+        while let Some(res) = out_stream.next().await {
+            match res {
+                Ok(_) => {}
+                Err(e) => {
+                    let err = RustDFSError::TonicStatus(e);
+                    out.write_err(&err);
+                    return Err(err);
+                }
+            }
+        }
+        Ok(())
+    });
+
+    state.current_block = Some(CurrentBlock {
+        tx,
+        block_id: block.block_id.clone(),
+        nodes: block.nodes,
+        ack_handle,
+        sent: 0,
+    });
+
+    Ok(())
+}
+
+/**
+ * Finalizes the current write block by dropping the sender
+ * and waiting for the ack task to complete.
+ */
+async fn finalize_current_block(state: &mut WriteState) -> Result<()> {
+    if let Some(cb) = state.current_block.take() {
+        // Drop sender to signal end of stream
+        drop(cb.tx);
+
+        // Wait for ack task to complete
+        match cb.ack_handle.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(RustDFSError::Custom(format!("Ack task panicked: {}", e))),
+        }
+    } else {
+        Ok(())
+    }
+}
+
+// ── Helper functions ─────────────────────────────────────────────────────────
+
 async fn name_client(host: &HostAddr, out: &OutManager) -> Result<NameNodeClient<Channel>> {
     out.write(Verbosity::Info, || {
         format!("Connecting to name node at {}:{}", host.hostname, host.port)
@@ -349,13 +616,6 @@ async fn name_client(host: &HostAddr, out: &OutManager) -> Result<NameNodeClient
     })
 }
 
-/**
- * Connects to a Data Node and returns a gRPC client.
- *
- *  @param host - [HostAddr] of the Data Node.
- *  @param out - [OutManager] for logging.
- *  @return Result<DataNodeClient<Channel>>
- */
 async fn data_client(host: &HostAddr, out: &OutManager) -> Result<DataNodeClient<Channel>> {
     out.write(Verbosity::Info, || {
         format!("Connecting to data node at {}:{}", host.hostname, host.port)
@@ -370,53 +630,6 @@ async fn data_client(host: &HostAddr, out: &OutManager) -> Result<DataNodeClient
     })
 }
 
-/**
- * Builds a [WriteStartRequest] for the given file and operation.
- *
- *  @param dest - Remote file name in the namespace.
- *  @param id - Operation ID for the write lease.
- *  @return WriteStartRequest
- */
-fn write_start_req(dest: &str, id: &str) -> WriteStartRequest {
-    WriteStartRequest {
-        file_name: dest.to_string(),
-        operation_id: id.to_string(),
-    }
-}
-
-/**
- * Builds a [WriteEndRequest] to finalize or abort a write.
- */
-fn write_end_req(dest: &str, operation_id: &str, success: bool) -> WriteEndRequest {
-    WriteEndRequest {
-        file_name: dest.to_string(),
-        operation_id: operation_id.to_string(),
-        success,
-    }
-}
-
-/**
- * Builds a Name Node [ReadRequest].
- */
-fn name_read_req(source: &str) -> NameReadRequest {
-    NameReadRequest {
-        file_name: source.to_string(),
-    }
-}
-
-/**
- * Builds a Data Node [ReadRequest] with an optional byte offset.
- */
-fn data_read_req(block_id: &str, offset: u64) -> DataReadRequest {
-    DataReadRequest {
-        block_id: block_id.to_string(),
-        offset,
-    }
-}
-
-/**
- * Converts a protobuf [Node] to a [HostAddr].
- */
 fn to_host_addr(node: &Node) -> HostAddr {
     HostAddr {
         hostname: node.host.clone(),
@@ -424,10 +637,6 @@ fn to_host_addr(node: &Node) -> HostAddr {
     }
 }
 
-/**
- * Converts a slice of protobuf [Node]s to [ReplicaNode]s for
- * the write replication chain.
- */
 fn to_replica_nodes(nodes: &[Node]) -> Vec<ReplicaNode> {
     nodes
         .iter()
@@ -438,26 +647,13 @@ fn to_replica_nodes(nodes: &[Node]) -> Vec<ReplicaNode> {
         .collect()
 }
 
-/**
- * Spawns a background task that periodically renews the write lease
- * with the Name Node. Renews at half the remaining lease duration.
- * The caller should [JoinHandle::abort] the returned handle when
- * the write operation finishes.
- *
- *  @param name - Cloned [NameNodeClient] for issuing RenewLease RPCs.
- *  @param file_name - Remote file name the lease belongs to.
- *  @param operation_id - Operation ID that owns the lease.
- *  @param expire - Lease expiry as epoch seconds.
- *  @param out - [OutManager] for logging.
- *  @return JoinHandle<()> - Handle to the renewal task.
- */
 fn spawn_lease_renewal(
     mut name: NameNodeClient<Channel>,
     file_name: String,
     operation_id: String,
     expire: u64,
     out: OutManager,
-) -> tokio::task::JoinHandle<()> {
+) -> JoinHandle<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -492,31 +688,4 @@ fn spawn_lease_renewal(
             }
         }
     })
-}
-
-/**
- * Opens a file for reading, wrapped in [Arc<Mutex<BufReader>>]
- * so it can be shared across sequential block writes.
- *
- *  @param fp - Local file path.
- *  @param size - Buffer capacity in bytes.
- *  @return Result<Arc<Mutex<BufReader<File>>>>
- */
-async fn reader(fp: &str, size: usize) -> Result<Arc<Mutex<BufReader<File>>>> {
-    let file = File::open(fp).await.map_err(RustDFSError::Io)?;
-    let reader = BufReader::with_capacity(size, file);
-    Ok(Arc::new(Mutex::new(reader)))
-}
-
-/**
- * Creates a buffered writer for the destination file.
- *
- *  @param fp - Local file path.
- *  @param size - Buffer capacity in bytes.
- *  @return Result<BufWriter<File>>
- */
-async fn writer(fp: &str, size: usize) -> Result<BufWriter<File>> {
-    let file = File::create(fp).await.map_err(RustDFSError::Io)?;
-    let writer = BufWriter::with_capacity(size, file);
-    Ok(writer)
 }
