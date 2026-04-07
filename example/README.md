@@ -16,7 +16,6 @@ Per-example notes
 - `basic/` — writes and reads `small.txt`, `medium.txt`, and `large.txt`, then diffs each.
 - `leasing/` — lease semantics tests that use `small.txt` and `large.txt`.
 - `persistence/` — writes files, stops the entire cluster, restarts, and reads them back to verify data survives via checkpoint/journal recovery and block reports.
-- `c_basic/` — same test as `basic/` but using a C program linked against `librustdfs_client.so` via the C FFI.
 
 To run an example, `cd` into the appropriate subdir and run:
 

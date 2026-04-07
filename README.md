@@ -6,10 +6,9 @@ Files are split into configurable fixed-size blocks (default 4 MB), distributed 
 
 ## Modules
 
-| Crate | Binary / Library | Description |
+| Crate | Binary | Description |
 |---|---|---|
-| `client` | `librustdfs_client` | Client library with Rust API (`RdfsClient`, `RdfsFile`) and C FFI (`rdfs_connect`, `rdfs_open`, etc.) for reading / writing files to the cluster via gRPC streaming |
-| `cli` | `rustDFS-client` | CLI wrapper around `client` — parses args, drives read/write operations |
+| `client` | `rustDFS-client` | CLI tool that reads / writes files to the cluster via gRPC streaming |
 | `name_node` | `rustDFS-namenode` | Metadata server — manages the file namespace, allocates blocks, assigns data nodes, issues write leases, and tracks data node liveness via heartbeats |
 | `data_node` | `rustDFS-datanode` | Storage server — persists blocks on local disk, chains replication to peer data nodes, and sends periodic heartbeats to the name node |
 | `proto` | *(library)* | Protocol Buffer definitions and generated gRPC code (`name_node.proto`, `data_node.proto`, `name_node_persist.proto`) |
