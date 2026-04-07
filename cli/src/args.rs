@@ -1,6 +1,6 @@
 use clap::{Parser, ValueEnum};
 
-use crate::out::Verbosity;
+use rustdfs_client::out::Verbosity as LibVerbosity;
 
 /**
  * Supported operations for the RustDFS client.
@@ -15,6 +15,26 @@ pub enum Operation {
 }
 
 /**
+ * CLI verbosity levels.
+ */
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, ValueEnum)]
+pub enum Verbosity {
+    Silent,
+    Error,
+    Info,
+}
+
+impl From<Verbosity> for LibVerbosity {
+    fn from(v: Verbosity) -> Self {
+        match v {
+            Verbosity::Silent => LibVerbosity::Silent,
+            Verbosity::Error => LibVerbosity::Error,
+            Verbosity::Info => LibVerbosity::Info,
+        }
+    }
+}
+
+/**
  * Command line arguments for the RustDFS client.
  *
  *  @field op - [Operation] to perform (read or write).
@@ -22,9 +42,6 @@ pub enum Operation {
  *  @field source - Source path (local file for write, remote file for read).
  *  @field dest - Destination path (remote file for write, local file for read).
  *  @field verbosity - Console output [Verbosity] level.
- *
- * CLI Usage:
- *  rustdfs-client <write|read> <host:port> <source> <dest> [-v <VERBOSITY>]
  */
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]

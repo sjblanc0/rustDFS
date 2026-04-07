@@ -1,5 +1,4 @@
 use chrono::Local;
-use clap::ValueEnum;
 
 use crate::error::RustDFSError;
 
@@ -20,7 +19,7 @@ pub struct OutManager {
  *  @variant Error - Only errors.
  *  @variant Info - Informational messages and errors.
  */
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, ValueEnum)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Verbosity {
     Silent,
     Error,
