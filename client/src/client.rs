@@ -38,12 +38,12 @@ const CHANNEL_SIZE: usize = 8;
  *  @field name - gRPC client to the Name Node.
  *  @field out - [OutManager] for optional console output.
  */
-pub struct RdfsClient {
+pub struct RustDFSClient {
     name: NameNodeClient<Channel>,
     out: OutManager,
 }
 
-impl RdfsClient {
+impl RustDFSClient {
     /**
      * Connect to the name node.
      *
@@ -60,7 +60,7 @@ impl RdfsClient {
             verbosity: Verbosity::Silent,
         };
         let name = name_client(&host_addr, &out).await?;
-        Ok(RdfsClient {
+        Ok(RustDFSClient {
             name,
             out,
         })
@@ -78,7 +78,7 @@ impl RdfsClient {
             verbosity: Verbosity::Silent,
         };
         let name = name_client(&host_addr, &out).await?;
-        Ok(RdfsClient {
+        Ok(RustDFSClient {
             name,
             out,
         })
@@ -105,9 +105,9 @@ impl RdfsClient {
      *
      *  @param path - Remote file path.
      *  @param flags - [O_RDONLY] or [O_WRONLY].
-     *  @return Result<RdfsFile>
+     *  @return Result<RustDFSFile>
      */
-    pub async fn open(&mut self, path: &str, flags: i32) -> Result<RdfsFile> {
+    pub async fn open(&mut self, path: &str, flags: i32) -> Result<RustDFSFile> {
         if flags == crate::O_RDONLY {
             self.open_read(path).await
         } else if flags == crate::O_WRONLY {
@@ -117,7 +117,7 @@ impl RdfsClient {
         }
     }
 
-    async fn open_read(&mut self, path: &str) -> Result<RdfsFile> {
+    async fn open_read(&mut self, path: &str) -> Result<RustDFSFile> {
         let name_req = NameReadRequest {
             file_name: path.to_string(),
         };
@@ -130,7 +130,7 @@ impl RdfsClient {
 
         let blocks = name_res.blocks;
 
-        Ok(RdfsFile {
+        Ok(RustDFSFile {
             state: FileState::Read(ReadState {
                 blocks,
                 current_block_idx: 0,
@@ -144,7 +144,7 @@ impl RdfsClient {
         })
     }
 
-    async fn open_write(&mut self, path: &str) -> Result<RdfsFile> {
+    async fn open_write(&mut self, path: &str) -> Result<RustDFSFile> {
         let op_id = Uuid::new_v4().to_string();
         let start_req = WriteStartRequest {
             file_name: path.to_string(),
@@ -168,7 +168,7 @@ impl RdfsClient {
             self.out.clone(),
         );
 
-        Ok(RdfsFile {
+        Ok(RustDFSFile {
             state: FileState::Write(WriteState {
                 name: self.name.clone(),
                 file_name: path.to_string(),
@@ -188,7 +188,7 @@ impl RdfsClient {
  * File handle — an open file for reading or writing.
  * Internally tracks either [ReadState] or [WriteState].
  */
-pub struct RdfsFile {
+pub struct RustDFSFile {
     state: FileState,
 }
 
@@ -228,7 +228,7 @@ struct WriteState {
     closed: bool,
 }
 
-impl RdfsFile {
+impl RustDFSFile {
     /**
      * Read up to buf.len() bytes. Returns bytes read, 0 on EOF.
      * Only valid for files opened with [O_RDONLY].

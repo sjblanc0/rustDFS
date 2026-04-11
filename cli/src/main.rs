@@ -8,7 +8,7 @@
 mod args;
 
 use args::{Operation, RustDFSArgs};
-use rustdfs_client::{O_RDONLY, O_WRONLY, RdfsClient};
+use rustdfs_client::{O_RDONLY, O_WRONLY, RustDFSClient};
 
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -33,7 +33,7 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let mut client = RdfsClient::connect(hostname, port).await.unwrap_or_else(|e| {
+    let mut client = RustDFSClient::connect(hostname, port).await.unwrap_or_else(|e| {
         eprintln!("Failed to connect: {}", e);
         std::process::exit(1);
     });

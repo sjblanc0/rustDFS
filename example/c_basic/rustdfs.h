@@ -13,7 +13,7 @@ typedef struct rdfs_client rdfs_client_t;
 typedef struct rdfs_file   rdfs_file_t;
 
 /* POSIX-style return type for read/write byte counts */
-typedef int32_t rdfs_size_t;
+typedef int64_t rdfs_size_t;
 
 /*
  * Connect to the name node.

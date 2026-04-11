@@ -1,27 +1,27 @@
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::Arc;
 
-use crate::client::{RdfsClient, RdfsFile};
+use crate::client::{RustDFSClient, RustDFSFile};
 use crate::error::{RustDFSError, set_last_error};
 use crate::{O_RDONLY, O_WRONLY};
 
 /**
  * Opaque filesystem handle for the C FFI.
- * Wraps [RdfsClient] + a tokio [Runtime] so callers
+ * Wraps [RustDFSClient] + a tokio [Runtime] so callers
  * don't need to manage async themselves.
  */
-pub struct RdfsClientHandle {
+pub struct RustDFSClientHandle {
     runtime: Arc<tokio::runtime::Runtime>,
-    inner: RdfsClient,
+    inner: RustDFSClient,
 }
 
 /**
  * Opaque file handle for the C FFI.
- * Wraps [RdfsFile] + an [Arc<Runtime>] for block_on().
+ * Wraps [RustDFSFile] + an [Arc<Runtime>] for block_on().
  */
-pub struct RdfsFileHandle {
+pub struct RustDFSFileHandle {
     runtime: Arc<tokio::runtime::Runtime>,
-    inner: RdfsFile,
+    inner: RustDFSFile,
 }
 
 // ── FFI entry points ─────────────────────────────────────────────────────────
@@ -36,7 +36,7 @@ pub struct RdfsFileHandle {
 pub unsafe extern "C" fn rdfs_connect(
     host: *const c_char,
     port: u16,
-    fs_out: *mut *mut RdfsClientHandle,
+    fs_out: *mut *mut RustDFSClientHandle,
 ) -> c_int {
     if host.is_null() || fs_out.is_null() {
         let err = RustDFSError::Custom("Null pointer argument".to_string());
@@ -65,7 +65,7 @@ pub unsafe extern "C" fn rdfs_connect(
         }
     };
 
-    let client = match runtime.block_on(RdfsClient::connect(&host_str, port)) {
+    let client = match runtime.block_on(RustDFSClient::connect(&host_str, port)) {
         Ok(c) => c,
         Err(e) => {
             set_last_error(&e);
@@ -73,7 +73,7 @@ pub unsafe extern "C" fn rdfs_connect(
         }
     };
 
-    let handle = Box::new(RdfsClientHandle {
+    let handle = Box::new(RustDFSClientHandle {
         runtime,
         inner: client,
     });
@@ -91,7 +91,7 @@ pub unsafe extern "C" fn rdfs_connect(
 /// # Safety
 /// `fs` must be a valid pointer returned by [rdfs_connect], or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rdfs_disconnect(fs: *mut RdfsClientHandle) -> c_int {
+pub unsafe extern "C" fn rdfs_disconnect(fs: *mut RustDFSClientHandle) -> c_int {
     if fs.is_null() {
         let err = RustDFSError::Custom("Null filesystem handle".to_string());
         set_last_error(&err);
@@ -109,15 +109,15 @@ pub unsafe extern "C" fn rdfs_disconnect(fs: *mut RdfsClientHandle) -> c_int {
 /// Returns 0 on success, -1 on error.
 ///
 /// # Safety
-/// `fs` must be a valid [RdfsClientHandle] pointer.
+/// `fs` must be a valid [RustDFSClientHandle] pointer.
 /// `path` must be a valid null-terminated C string.
 /// `file_out` must be a valid pointer to a pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rdfs_open(
-    fs: *mut RdfsClientHandle,
+    fs: *mut RustDFSClientHandle,
     path: *const c_char,
     flags: c_int,
-    file_out: *mut *mut RdfsFileHandle,
+    file_out: *mut *mut RustDFSFileHandle,
 ) -> c_int {
     if fs.is_null() || path.is_null() || file_out.is_null() {
         let err = RustDFSError::Custom("Null pointer argument".to_string());
@@ -149,7 +149,7 @@ pub unsafe extern "C" fn rdfs_open(
         }
     };
 
-    let file_handle = Box::new(RdfsFileHandle {
+    let file_handle = Box::new(RustDFSFileHandle {
         runtime: handle.runtime.clone(),
         inner: file,
     });
@@ -164,16 +164,16 @@ pub unsafe extern "C" fn rdfs_open(
 /// Returns bytes read on success, 0 on EOF, -1 on error.
 ///
 /// # Safety
-/// `fs` must be a valid [RdfsClientHandle] pointer.
-/// `file` must be a valid [RdfsFileHandle] pointer.
+/// `fs` must be a valid [RustDFSClientHandle] pointer.
+/// `file` must be a valid [RustDFSFileHandle] pointer.
 /// `buffer` must point to at least `length` writeable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rdfs_read(
-    _fs: *mut RdfsClientHandle,
-    file: *mut RdfsFileHandle,
+    _fs: *mut RustDFSClientHandle,
+    file: *mut RustDFSFileHandle,
     buffer: *mut c_void,
-    length: i32,
-) -> i32 {
+    length: i64,
+) -> i64 {
     if file.is_null() || buffer.is_null() {
         let err = RustDFSError::Custom("Null pointer argument".to_string());
         set_last_error(&err);
@@ -188,7 +188,7 @@ pub unsafe extern "C" fn rdfs_read(
     let buf = unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, length as usize) };
 
     match file_handle.runtime.block_on(file_handle.inner.read(buf)) {
-        Ok(n) => n as i32,
+        Ok(n) => n as i64,
         Err(e) => {
             set_last_error(&e);
             -1
@@ -200,16 +200,16 @@ pub unsafe extern "C" fn rdfs_read(
 /// Returns bytes written on success, -1 on error.
 ///
 /// # Safety
-/// `fs` must be a valid [RdfsClientHandle] pointer.
-/// `file` must be a valid [RdfsFileHandle] pointer.
+/// `fs` must be a valid [RustDFSClientHandle] pointer.
+/// `file` must be a valid [RustDFSFileHandle] pointer.
 /// `buffer` must point to at least `length` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rdfs_write(
-    _fs: *mut RdfsClientHandle,
-    file: *mut RdfsFileHandle,
+    _fs: *mut RustDFSClientHandle,
+    file: *mut RustDFSFileHandle,
     buffer: *const c_void,
-    length: i32,
-) -> i32 {
+    length: i64,
+) -> i64 {
     if file.is_null() || buffer.is_null() {
         let err = RustDFSError::Custom("Null pointer argument".to_string());
         set_last_error(&err);
@@ -224,7 +224,7 @@ pub unsafe extern "C" fn rdfs_write(
     let data = unsafe { std::slice::from_raw_parts(buffer as *const u8, length as usize) };
 
     match file_handle.runtime.block_on(file_handle.inner.write(data)) {
-        Ok(n) => n as i32,
+        Ok(n) => n as i64,
         Err(e) => {
             set_last_error(&e);
             -1
@@ -236,12 +236,12 @@ pub unsafe extern "C" fn rdfs_write(
 /// Returns 0 on success, -1 on error.
 ///
 /// # Safety
-/// `fs` must be a valid [RdfsClientHandle] pointer.
-/// `file` must be a valid [RdfsFileHandle] pointer.
+/// `fs` must be a valid [RustDFSClientHandle] pointer.
+/// `file` must be a valid [RustDFSFileHandle] pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rdfs_flush(
-    _fs: *mut RdfsClientHandle,
-    file: *mut RdfsFileHandle,
+    _fs: *mut RustDFSClientHandle,
+    file: *mut RustDFSFileHandle,
 ) -> c_int {
     if file.is_null() {
         let err = RustDFSError::Custom("Null pointer argument".to_string());
@@ -266,12 +266,12 @@ pub unsafe extern "C" fn rdfs_flush(
 /// Returns 0 on success, -1 on error.
 ///
 /// # Safety
-/// `fs` must be a valid [RdfsClientHandle] pointer.
-/// `file` must be a valid [RdfsFileHandle] pointer returned by [rdfs_open].
+/// `fs` must be a valid [RustDFSClientHandle] pointer.
+/// `file` must be a valid [RustDFSFileHandle] pointer returned by [rdfs_open].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rdfs_close(
-    _fs: *mut RdfsClientHandle,
-    file: *mut RdfsFileHandle,
+    _fs: *mut RustDFSClientHandle,
+    file: *mut RustDFSFileHandle,
 ) -> c_int {
     if file.is_null() {
         let err = RustDFSError::Custom("Null file handle".to_string());

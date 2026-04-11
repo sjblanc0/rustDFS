@@ -1,8 +1,8 @@
 /**
  * rustDFS client library.
  *
- * Provides [RdfsClient] for connecting to a rustDFS cluster
- * and [RdfsFile] for reading and writing files. Also exposes
+ * Provides [RustDFSClient] for connecting to a rustDFS cluster
+ * and [RustDFSFile] for reading and writing files. Also exposes
  * a C-compatible FFI through [ffi].
  */
 mod client;
@@ -12,7 +12,7 @@ mod host;
 pub mod out;
 pub mod result;
 
-pub use client::{RdfsClient, RdfsFile};
+pub use client::{RustDFSClient, RustDFSFile};
 
 /// Open for reading (mirrors O_RDONLY).
 pub const O_RDONLY: i32 = 0x0001;
