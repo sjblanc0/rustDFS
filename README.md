@@ -51,8 +51,7 @@ Block files are prefixed with a 4-byte magic header (`RDFS`) so that `scan_block
 
 ### Heartbeats & Liveness
 
-Data nodes send periodic heartbeat RPCs to the name node (default: every 3 seconds). The name node runs a background reaper that marks nodes as dead after a configurable timeout (default: 30 seconds of missed heartbeats). If a heartbeat fails, the data node re-enters its registration flow with exponential backoff retry.
-
+Data nodes send periodic heartbeat RPCs to the name node (default: every 3 seconds). The name node runs a background reaper that marks nodes as dead after a configurable timeout (default: 30 seconds of missed heartbeats).
 ## Developing
 
 The project is built with the following tools:
@@ -197,7 +196,7 @@ GitHub Actions runs four checks on every change to `main`:
 
 ## Running with Docker Compose
 
-The `example/` directory contains two ready-to-run demos:
+The `example/` directory contains three ready-to-run demos:
 
 | Example | Description |
 |---|---|
