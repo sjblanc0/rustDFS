@@ -1,7 +1,5 @@
 use clap::{Parser, ValueEnum};
 
-use rustdfs_client::out::Verbosity as LibVerbosity;
-
 /**
  * Supported operations for the RustDFS client.
  *
@@ -15,33 +13,12 @@ pub enum Operation {
 }
 
 /**
- * CLI verbosity levels.
- */
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, ValueEnum)]
-pub enum Verbosity {
-    Silent,
-    Error,
-    Info,
-}
-
-impl From<Verbosity> for LibVerbosity {
-    fn from(v: Verbosity) -> Self {
-        match v {
-            Verbosity::Silent => LibVerbosity::Silent,
-            Verbosity::Error => LibVerbosity::Error,
-            Verbosity::Info => LibVerbosity::Info,
-        }
-    }
-}
-
-/**
  * Command line arguments for the RustDFS client.
  *
  *  @field op - [Operation] to perform (read or write).
  *  @field host - Name Node address in "host:port" format.
  *  @field source - Source path (local file for write, remote file for read).
  *  @field dest - Destination path (remote file for write, local file for read).
- *  @field verbosity - Console output [Verbosity] level.
  */
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -54,9 +31,6 @@ pub struct RustDFSArgs {
     pub source: String,
 
     pub dest: String,
-
-    #[arg(short, long, value_enum, default_value_t = Verbosity::Error)]
-    pub verbosity: Verbosity,
 }
 
 impl RustDFSArgs {

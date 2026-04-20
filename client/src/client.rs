@@ -25,8 +25,6 @@ use rustdfs_proto::name::Block;
 
 use crate::error::RustDFSError;
 use crate::host::HostAddr;
-use crate::out::OutManager;
-use crate::out::Verbosity;
 use crate::result::Result;
 
 const CHANNEL_SIZE: usize = 8;
@@ -34,13 +32,10 @@ const CHANNEL_SIZE: usize = 8;
 /**
  * Filesystem handle — connection to the name node.
  *
- *  @field host - [HostAddr] of the Name Node.
  *  @field name - gRPC client to the Name Node.
- *  @field out - [OutManager] for optional console output.
  */
 pub struct RustDFSClient {
     name: NameNodeClient<Channel>,
-    out: OutManager,
 }
 
 impl RustDFSClient {
@@ -56,14 +51,8 @@ impl RustDFSClient {
             hostname: host.to_string(),
             port,
         };
-        let out = OutManager {
-            verbosity: Verbosity::Silent,
-        };
-        let name = name_client(&host_addr, &out).await?;
-        Ok(RustDFSClient {
-            name,
-            out,
-        })
+        let name = name_client(&host_addr).await?;
+        Ok(RustDFSClient { name })
     }
 
     /**
@@ -74,23 +63,9 @@ impl RustDFSClient {
      */
     pub async fn connect_from_str(host_str: &str) -> Result<Self> {
         let host_addr = HostAddr::from_str(host_str)?;
-        let out = OutManager {
-            verbosity: Verbosity::Silent,
-        };
-        let name = name_client(&host_addr, &out).await?;
-        Ok(RustDFSClient {
-            name,
-            out,
-        })
-    }
+        let name = name_client(&host_addr).await?;
 
-    /**
-     * Set the verbosity level for logging output.
-     *
-     *  @param verbosity - [Verbosity] level.
-     */
-    pub fn set_verbosity(&mut self, verbosity: Verbosity) {
-        self.out.verbosity = verbosity;
+        Ok(RustDFSClient { name })
     }
 
     /**
@@ -138,7 +113,6 @@ impl RustDFSClient {
                 offset: 0,
                 overflow: Vec::new(),
                 overflow_pos: 0,
-                out: self.out.clone(),
                 eof: false,
             }),
         })
@@ -165,7 +139,6 @@ impl RustDFSClient {
             path.to_string(),
             op_id.clone(),
             start_res.expire,
-            self.out.clone(),
         );
 
         Ok(RustDFSFile {
@@ -177,7 +150,6 @@ impl RustDFSClient {
                 msg_size,
                 current_block: None,
                 lease_handle,
-                out: self.out.clone(),
                 closed: false,
             }),
         })
@@ -204,7 +176,6 @@ struct ReadState {
     offset: u64,
     overflow: Vec<u8>,
     overflow_pos: usize,
-    out: OutManager,
     eof: bool,
 }
 
@@ -224,7 +195,6 @@ struct WriteState {
     msg_size: usize,
     current_block: Option<CurrentBlock>,
     lease_handle: JoinHandle<()>,
-    out: OutManager,
     closed: bool,
 }
 
@@ -293,7 +263,7 @@ impl RustDFSFile {
                         block_id: block.block_id.clone(),
                         offset: state.offset,
                     };
-                    match data_client(&host, &state.out).await {
+                    match data_client(&host).await {
                         Ok(mut client) => match client.read(req).await {
                             Ok(response) => {
                                 state.stream = Some(response.into_inner());
@@ -302,14 +272,12 @@ impl RustDFSFile {
                             }
                             Err(e) => {
                                 let err = RustDFSError::TonicStatus(e);
-                                state.out.write_err(&err);
                                 if i == node_count - 1 {
                                     return Err(err);
                                 }
                             }
                         },
                         Err(e) => {
-                            state.out.write_err(&e);
                             if i == node_count - 1 {
                                 return Err(e);
                             }
@@ -351,7 +319,6 @@ impl RustDFSFile {
 
                         // Find next replica to try
                         let err = RustDFSError::TonicStatus(e);
-                        state.out.write_err(&err);
 
                         // We can't easily track which replica we were on,
                         // so re-open from offset (failover handled by opening again)
@@ -429,11 +396,7 @@ impl RustDFSFile {
                     replicas: to_replica_nodes(&cb.nodes[1..]),
                 };
 
-                cb.tx.send(req).await.map_err(|e| {
-                    let err = RustDFSError::DataWrite(e);
-                    state.out.write_err(&err);
-                    err
-                })?;
+                cb.tx.send(req).await.map_err(RustDFSError::DataWrite)?;
 
                 pos += chunk.len();
             }
@@ -502,20 +465,15 @@ impl RustDFSFile {
                     operation_id: state.op_id.clone(),
                     success: err.is_none(),
                 };
-                state.name.write_end(end_req).await.map_err(|e| {
-                    let err = RustDFSError::TonicStatus(e);
-                    state.out.write_err(&err);
-                    err
-                })?;
+                state
+                    .name
+                    .write_end(end_req)
+                    .await
+                    .map_err(RustDFSError::TonicStatus)?;
 
                 match err {
                     Some(e) => Err(e),
-                    None => {
-                        state.out.write(Verbosity::Info, || {
-                            format!("Finished writing file: {}", state.file_name)
-                        });
-                        Ok(())
-                    }
+                    None => Ok(()),
                 }
             }
         }
@@ -541,12 +499,10 @@ async fn allocate_block(state: &mut WriteState) -> Result<()> {
 
     let block = add_res.block.unwrap();
     let data_host = to_host_addr(&block.nodes[0]);
-    let mut data = data_client(&data_host, &state.out).await?;
+    let mut data = data_client(&data_host).await?;
 
     let (tx, rx) = mpsc::channel::<WriteRequest>(CHANNEL_SIZE);
     let in_stream = ReceiverStream::new(rx);
-
-    let out = state.out.clone();
 
     let mut out_stream = data
         .write(in_stream)
@@ -560,9 +516,7 @@ async fn allocate_block(state: &mut WriteState) -> Result<()> {
             match res {
                 Ok(_) => {}
                 Err(e) => {
-                    let err = RustDFSError::TonicStatus(e);
-                    out.write_err(&err);
-                    return Err(err);
+                    return Err(RustDFSError::TonicStatus(e));
                 }
             }
         }
@@ -602,32 +556,18 @@ async fn finalize_current_block(state: &mut WriteState) -> Result<()> {
 
 // ── Helper functions ─────────────────────────────────────────────────────────
 
-async fn name_client(host: &HostAddr, out: &OutManager) -> Result<NameNodeClient<Channel>> {
-    out.write(Verbosity::Info, || {
-        format!("Connecting to name node at {}:{}", host.hostname, host.port)
-    });
-
+async fn name_client(host: &HostAddr) -> Result<NameNodeClient<Channel>> {
     let endpoint = host.to_endpoint()?;
-
-    NameNodeClient::connect(endpoint).await.map_err(|e| {
-        let err = RustDFSError::Tonic(e);
-        out.write_err(&err);
-        err
-    })
+    NameNodeClient::connect(endpoint)
+        .await
+        .map_err(RustDFSError::Tonic)
 }
 
-async fn data_client(host: &HostAddr, out: &OutManager) -> Result<DataNodeClient<Channel>> {
-    out.write(Verbosity::Info, || {
-        format!("Connecting to data node at {}:{}", host.hostname, host.port)
-    });
-
+async fn data_client(host: &HostAddr) -> Result<DataNodeClient<Channel>> {
     let endpoint = host.to_endpoint()?;
-
-    DataNodeClient::connect(endpoint).await.map_err(|e| {
-        let err = RustDFSError::Tonic(e);
-        out.write_err(&err);
-        err
-    })
+    DataNodeClient::connect(endpoint)
+        .await
+        .map_err(RustDFSError::Tonic)
 }
 
 fn to_host_addr(node: &Node) -> HostAddr {
@@ -652,7 +592,6 @@ fn spawn_lease_renewal(
     file_name: String,
     operation_id: String,
     expire: u64,
-    out: OutManager,
 ) -> JoinHandle<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -671,20 +610,8 @@ fn spawn_lease_renewal(
             };
 
             match name.renew_lease(req).await {
-                Ok(res) => {
-                    out.write(Verbosity::Info, || {
-                        format!(
-                            "Lease renewed for {} (expires {})",
-                            file_name,
-                            res.into_inner().expire
-                        )
-                    });
-                }
-                Err(e) => {
-                    let err = RustDFSError::TonicStatus(e);
-                    out.write_err(&err);
-                    break;
-                }
+                Ok(_) => {}
+                Err(_) => break,
             }
         }
     })

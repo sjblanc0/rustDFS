@@ -9,7 +9,6 @@ mod client;
 pub mod error;
 pub mod ffi;
 mod host;
-pub mod out;
 pub mod result;
 
 pub use client::{RustDFSClient, RustDFSFile};

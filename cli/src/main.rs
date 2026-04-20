@@ -38,9 +38,6 @@ async fn main() {
         std::process::exit(1);
     });
 
-    // Set verbosity from CLI args
-    client.set_verbosity(args.verbosity.into());
-
     match op {
         Operation::Write => {
             // Open local file for reading
