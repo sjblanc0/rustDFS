@@ -1,5 +1,6 @@
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::Arc;
+use tokio::runtime::Builder as TokioBuilder;
 
 use crate::client::{RustDFSClient, RustDFSFile};
 use crate::error::{RustDFSError, set_last_error};
@@ -55,11 +56,13 @@ pub unsafe extern "C" fn rdfs_connect(
         }
     };
 
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
+    let rt = match TokioBuilder::new_multi_thread()
         .enable_all()
         .build()
     {
-        Ok(rt) => Arc::new(rt),
+        Ok(rt) => {
+            Arc::new(rt)
+        }
         Err(e) => {
             let err = RustDFSError::Custom(format!("Failed to create runtime: {}", e));
             set_last_error(&err);
@@ -67,8 +70,10 @@ pub unsafe extern "C" fn rdfs_connect(
         }
     };
 
-    let client = match runtime.block_on(RustDFSClient::connect(&host_str, port)) {
-        Ok(c) => c,
+    let client = match rt.block_on(RustDFSClient::connect(&host_str, port)) {
+        Ok(c) => {
+            c
+        }
         Err(e) => {
             set_last_error(&e);
             return -1;
@@ -76,13 +81,14 @@ pub unsafe extern "C" fn rdfs_connect(
     };
 
     let handle = Box::new(RustDFSClientHandle {
-        runtime,
+        runtime: rt,
         inner: client,
     });
 
     unsafe {
         *fs_out = Box::into_raw(handle);
     }
+
     0
 }
 
