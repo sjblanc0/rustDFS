@@ -45,7 +45,9 @@ pub unsafe extern "C" fn rdfs_connect(
     }
 
     let host_str = match unsafe { CStr::from_ptr(host) }.to_str() {
-        Ok(s) => s.to_string(),
+        Ok(s) => {
+            s.to_string()
+        }
         Err(_) => {
             let err = RustDFSError::Custom("Invalid UTF-8 in host string".to_string());
             set_last_error(&err);
