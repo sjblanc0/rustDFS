@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::Arc;
 
 use crate::client::{RustDFSClient, RustDFSFile};
@@ -24,7 +24,7 @@ pub struct RustDFSFileHandle {
     inner: RustDFSFile,
 }
 
-// ── FFI entry points ─────────────────────────────────────────────────────────
+// FFI entrypoints
 
 /// Connect to the name node.
 /// Returns 0 on success, -1 on error.
@@ -281,10 +281,7 @@ pub unsafe extern "C" fn rdfs_close(
 
     let file_handle = unsafe { Box::from_raw(file) };
 
-    match file_handle
-        .runtime
-        .block_on(file_handle.inner.close())
-    {
+    match file_handle.runtime.block_on(file_handle.inner.close()) {
         Ok(()) => 0,
         Err(e) => {
             set_last_error(&e);

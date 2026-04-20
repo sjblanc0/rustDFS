@@ -33,10 +33,12 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let mut client = RustDFSClient::connect(hostname, port).await.unwrap_or_else(|e| {
-        eprintln!("Failed to connect: {}", e);
-        std::process::exit(1);
-    });
+    let mut client = RustDFSClient::connect(hostname, port)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to connect: {}", e);
+            std::process::exit(1);
+        });
 
     match op {
         Operation::Write => {

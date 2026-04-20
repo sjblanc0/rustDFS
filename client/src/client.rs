@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Channel;
 use tonic::Streaming;
+use tonic::transport::Channel;
 use uuid::Uuid;
 
 use rustdfs_proto::data::ReadRequest as DataReadRequest;
@@ -15,13 +15,13 @@ use rustdfs_proto::data::WriteRequest;
 use rustdfs_proto::data::data_node_client::DataNodeClient;
 use rustdfs_proto::data::write_request::ReplicaNode;
 use rustdfs_proto::name::AddBlockRequest;
+use rustdfs_proto::name::Block;
 use rustdfs_proto::name::ReadRequest as NameReadRequest;
 use rustdfs_proto::name::RenewLeaseRequest;
 use rustdfs_proto::name::WriteEndRequest;
 use rustdfs_proto::name::WriteStartRequest;
 use rustdfs_proto::name::block::Node;
 use rustdfs_proto::name::name_node_client::NameNodeClient;
-use rustdfs_proto::name::Block;
 
 use crate::error::RustDFSError;
 use crate::host::HostAddr;
@@ -382,9 +382,8 @@ impl RustDFSFile {
 
             let remaining_data = &data[total_written..];
             let chunk_len = remaining_data.len().min(remaining_in_block);
-
-            // Split into msg_size chunks
             let mut pos = 0;
+
             while pos < chunk_len {
                 let end = (pos + state.msg_size).min(chunk_len);
                 let chunk = &remaining_data[pos..end];
@@ -450,10 +449,10 @@ impl RustDFSFile {
                 let mut err = None;
 
                 // Finalize current block if one is open
-                if state.current_block.is_some() {
-                    if let Err(e) = finalize_current_block(state).await {
-                        err = Some(e);
-                    }
+                if state.current_block.is_some()
+                    && let Err(e) = finalize_current_block(state).await
+                {
+                    err = Some(e);
                 }
 
                 // Abort lease renewal

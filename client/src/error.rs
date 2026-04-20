@@ -75,7 +75,7 @@ impl Display for RustDFSError {
     }
 }
 
-// ── Thread-local error storage for FFI ───────────────────────────────────────
+// thread-local error storage for C FFI
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -86,14 +86,11 @@ thread_local! {
  * by [get_last_error].
  */
 pub fn set_last_error(err: &RustDFSError) {
-    let msg = err.to_string();
-    // CString::new will fail if msg contains interior nulls; replace them.
-    let safe_msg = msg.replace('\0', "");
-    if let Ok(c) = CString::new(safe_msg) {
-        LAST_ERROR.with(|cell| {
-            *cell.borrow_mut() = Some(c);
-        });
-    }
+    let msg = CString::new(err.to_string()).unwrap();
+
+    LAST_ERROR.with(|cell| {
+        *cell.borrow_mut() = Some(msg);
+    });
 }
 
 /**
@@ -104,6 +101,7 @@ pub fn set_last_error(err: &RustDFSError) {
 pub fn get_last_error() -> *const std::ffi::c_char {
     LAST_ERROR.with(|cell| {
         let borrow = cell.borrow();
+
         match &*borrow {
             Some(c) => c.as_ptr(),
             None => std::ptr::null(),
